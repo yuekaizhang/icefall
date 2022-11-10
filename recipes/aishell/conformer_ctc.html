@@ -16,6 +16,7 @@
         <script src="../../_static/underscore.js"></script>
         <script src="../../_static/_sphinx_javascript_frameworks_compat.js"></script>
         <script src="../../_static/doctools.js"></script>
+        <script src="../../_static/sphinx_highlight.js"></script>
     <script src="../../_static/js/theme.js"></script>
     <link rel="index" title="Index" href="../../genindex.html" />
     <link rel="search" title="Search" href="../../search.html" />
@@ -41,6 +42,7 @@
               <p class="caption" role="heading"><span class="caption-text">Contents:</span></p>
 <ul class="current">
 <li class="toctree-l1"><a class="reference internal" href="../../installation/index.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../model-export/index.html">Model export</a></li>
 <li class="toctree-l1 current"><a class="reference internal" href="../index.html">Recipes</a><ul class="current">
 <li class="toctree-l2 current"><a class="reference internal" href="index.html">aishell</a><ul class="current">
 <li class="toctree-l3"><a class="reference internal" href="tdnn_lstm_ctc.html">TDNN-LSTM CTC</a></li>
@@ -78,12 +80,12 @@
         <div class="rst-content">
           <div role="navigation" aria-label="Page navigation">
   <ul class="wy-breadcrumbs">
-      <li><a href="../../index.html" class="icon icon-home"></a> &raquo;</li>
-          <li><a href="../index.html">Recipes</a> &raquo;</li>
-          <li><a href="index.html">aishell</a> &raquo;</li>
-      <li>Conformer CTC</li>
+      <li><a href="../../index.html" class="icon icon-home"></a></li>
+          <li class="breadcrumb-item"><a href="../index.html">Recipes</a></li>
+          <li class="breadcrumb-item"><a href="index.html">aishell</a></li>
+      <li class="breadcrumb-item active">Conformer CTC</li>
       <li class="wy-breadcrumbs-aside">
-              <a href="https://github.com/k2-fsa/icefall/blob/master/icefall/docs/source/recipes/aishell/conformer_ctc.rst" class="fa fa-github"> Edit on GitHub</a>
+              <a href="https://github.com/k2-fsa/icefall/blob/master/docs/source/recipes/aishell/conformer_ctc.rst" class="fa fa-github"> Edit on GitHub</a>
       </li>
   </ul>
   <hr/>
@@ -499,7 +501,7 @@ Note: We have removed optimizer <code class="docutils literal notranslate"><span
 </ul>
 </div></blockquote>
 <p>The information of the test sound files is listed below:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>$ soxi tmp/icefall_asr_aishell_conformer_ctc/test_wavs/*.wav
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>$ soxi tmp/icefall_asr_aishell_conformer_ctc/test_waves/*.wav
 
 Input File     : <span class="s1">&#39;tmp/icefall_asr_aishell_conformer_ctc/test_waves/BAC009S0764W0121.wav&#39;</span>
 Channels       : <span class="m">1</span>
@@ -558,9 +560,9 @@ $ ./conformer_ctc/pretrained.py <span class="se">\</span>
   --checkpoint ./tmp/icefall_asr_aishell_conformer_ctc/exp/pretrained.pt <span class="se">\</span>
   --tokens-file ./tmp/icefall_asr_aishell_conformer_ctc/data/lang_char/tokens.txt <span class="se">\</span>
   --method ctc-decoding <span class="se">\</span>
-  ./tmp/icefall_asr_aishell_conformer_ctc/test_wavs/BAC009S0764W0121.wav <span class="se">\</span>
-  ./tmp/icefall_asr_aishell_conformer_ctc/test_wavs/BAC009S0764W0122.wav <span class="se">\</span>
-  ./tmp/icefall_asr_aishell_conformer_ctc/test_wavs/BAC009S0764W0123.wav
+  ./tmp/icefall_asr_aishell_conformer_ctc/test_waves/BAC009S0764W0121.wav <span class="se">\</span>
+  ./tmp/icefall_asr_aishell_conformer_ctc/test_waves/BAC009S0764W0122.wav <span class="se">\</span>
+  ./tmp/icefall_asr_aishell_conformer_ctc/test_waves/BAC009S0764W0123.wav
 </pre></div>
 </div>
 <p>The output is given below:</p>
@@ -596,9 +598,9 @@ $ ./conformer_ctc/pretrained.py <span class="se">\</span>
   --words-file ./tmp/icefall_asr_aishell_conformer_ctc/data/lang_char/words.txt <span class="se">\</span>
   --HLG ./tmp/icefall_asr_aishell_conformer_ctc/data/lang_char/HLG.pt <span class="se">\</span>
   --method 1best <span class="se">\</span>
-  ./tmp/icefall_asr_aishell_conformer_ctc/test_wavs/BAC009S0764W0121.wav <span class="se">\</span>
-  ./tmp/icefall_asr_aishell_conformer_ctc/test_wavs/BAC009S0764W0122.wav <span class="se">\</span>
-  ./tmp/icefall_asr_aishell_conformer_ctc/test_wavs/BAC009S0764W0123.wav
+  ./tmp/icefall_asr_aishell_conformer_ctc/test_waves/BAC009S0764W0121.wav <span class="se">\</span>
+  ./tmp/icefall_asr_aishell_conformer_ctc/test_waves/BAC009S0764W0122.wav <span class="se">\</span>
+  ./tmp/icefall_asr_aishell_conformer_ctc/test_waves/BAC009S0764W0123.wav
 </pre></div>
 </div>
 <p>The output is given below:</p>
@@ -636,9 +638,9 @@ $ ./conformer_ctc/pretrained.py <span class="se">\</span>
   --words-file ./tmp/icefall_asr_aishell_conformer_ctc/data/lang_char/words.txt <span class="se">\</span>
   --HLG ./tmp/icefall_asr_aishell_conformer_ctc/data/lang_char/HLG.pt <span class="se">\</span>
   --method attention-decoder <span class="se">\</span>
-  ./tmp/icefall_asr_aishell_conformer_ctc/test_wavs/BAC009S0764W0121.wav <span class="se">\</span>
-  ./tmp/icefall_asr_aishell_conformer_ctc/test_wavs/BAC009S0764W0122.wav <span class="se">\</span>
-  ./tmp/icefall_asr_aishell_conformer_ctc/test_wavs/BAC009S0764W0123.wav
+  ./tmp/icefall_asr_aishell_conformer_ctc/test_waves/BAC009S0764W0121.wav <span class="se">\</span>
+  ./tmp/icefall_asr_aishell_conformer_ctc/test_waves/BAC009S0764W0122.wav <span class="se">\</span>
+  ./tmp/icefall_asr_aishell_conformer_ctc/test_waves/BAC009S0764W0123.wav
 </pre></div>
 </div>
 <p>The output is below:</p>
