@@ -18,7 +18,7 @@
 import warnings
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple, Union
-
+import math
 import k2
 import sentencepiece as spm
 import torch
@@ -742,6 +742,28 @@ def greedy_search_batch_ctc(
     assert encoder_out.ndim == 3
     assert encoder_out.size(0) >= 1, encoder_out.size(0)
 
+    def compress_ctc_log_probs(ctc_log_probs, encoder_out, encoder_out_lens, threshold=1):
+        mask1 = ctc_log_probs[:,:,0] < math.log(threshold)
+        seq_range = torch.arange(0,ctc_log_probs.shape[1],dtype=torch.int64, device='cuda')
+        seq_range_expand = seq_range.unsqueeze(0).expand(ctc_log_probs.shape[0], ctc_log_probs.shape[1])
+        seq_length_expand = encoder_out_lens.unsqueeze(-1)
+        mask2 = seq_range_expand <= seq_length_expand
+
+        mask = mask1 & mask2
+
+        res = torch.ones_like(encoder_out)*-60000
+        res[:,:,0] = 0
+        idx1 = mask.nonzero()[:, 0]
+        idx2 = torch.cat([torch.arange(a) for a in mask.cumsum(1).max(1).values])
+        new_encoder_out_lens = torch.tensor([a for a in mask.cumsum(1).max(1).values], dtype=torch.int64, device='cuda')
+        res[idx1, idx2] = encoder_out[mask]
+        new_encoder_out = res[:,:max(idx2)+1,:].contiguous()
+
+        return new_encoder_out, new_encoder_out_lens
+
+    nnet_output = model.ctc_model(encoder_out)
+    encoder_out, encoder_out_lens = compress_ctc_log_probs(nnet_output, encoder_out, encoder_out_lens)
+
     packed_encoder_out = torch.nn.utils.rnn.pack_padded_sequence(
         input=encoder_out,
         lengths=encoder_out_lens.cpu(),
@@ -750,6 +772,8 @@ def greedy_search_batch_ctc(
     )
 
     nnet_output = model.ctc_model(encoder_out)
+
+
     packed_ctc_logits = torch.nn.utils.rnn.pack_padded_sequence(
         input=nnet_output,
         lengths=encoder_out_lens.cpu(),
@@ -804,9 +828,19 @@ def greedy_search_batch_ctc(
         # logits'shape (batch_size, 1, 1, vocab_size)
 
         transducer_logits = logits.squeeze(1).squeeze(1)  # (batch_size, vocab_size)
-        assert transducer_logits.shape == current_ctc_logits.shape, f"{transduer_logits.shape}, {current_ctc_logits.shape}"
+        # assert transducer_logits.shape == current_ctc_logits.shape, f"{transduer_logits.shape}, {current_ctc_logits.shape}"
+        transducer_logits = torch.nn.functional.log_softmax(transducer_logits, dim=-1)
+        logits = transducer_logits.clone()
 
         logits = 0.9 * transducer_logits + 0.1 * current_ctc_logits
+
+        # for i in range(len(transducer_logits)):
+        #   if transducer_logits[i][0] > math.log(0.5) or current_ctc_logits[i][0] > math.log(0.5):
+        #     pass
+        #   else:
+        #     count += 1
+        #     logits[i] = 0.7 * transducer_logits[i] + 0.3 * current_ctc_logits[i]
+    
         
         assert logits.ndim == 2, logits.shape
         y = logits.argmax(dim=1).tolist()
