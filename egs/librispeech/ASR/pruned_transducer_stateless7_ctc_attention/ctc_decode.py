@@ -58,6 +58,7 @@ from icefall.decode import (
     one_best_decoding,
     rescore_with_n_best_list,
     rescore_with_whole_lattice,
+    rescore_with_attention_decoder,
 )
 from icefall.lexicon import Lexicon
 from icefall.utils import (
@@ -332,7 +333,7 @@ def decode_one_batch(
     feature_lens = supervisions["num_frames"].to(device)
 
     encoder_out, encoder_out_lens = model.encoder(feature, feature_lens)
-    nnet_output = model.ctc_output(encoder_out)
+    nnet_output = model.ctc_model(encoder_out)
     # nnet_output is (N, T, C)
 
     supervision_segments = torch.stack(
@@ -423,10 +424,19 @@ def decode_one_batch(
         subsampling_factor=params.subsampling_factor,
     )
 
-    if params.decoding_method == "ctc-decoding":
-        best_path = one_best_decoding(
+    if "ctc-decoding" in params.decoding_method and "attention" not in params.decoding_method:
+        if params.decoding_method == "ctc-decoding":
+            best_path = one_best_decoding(
             lattice=lattice, use_double_scores=params.use_double_scores
-        )
+            )
+        if params.decoding_method == "ctc-decoding-nbest":
+            best_path = nbest_decoding(
+                lattice=lattice,
+                num_paths=params.num_paths,
+                use_double_scores=params.use_double_scores,
+                nbest_scale=params.nbest_scale,
+            )
+                
         # Note: `best_path.aux_labels` contains token IDs, not word IDs
         # since we are using H, not HLG here.
         #
@@ -444,6 +454,8 @@ def decode_one_batch(
     assert params.decoding_method in [
         "nbest-rescoring",
         "whole-lattice-rescoring",
+        "attention-decoder",
+        "ctc-decoding-attention-decoder"
     ]
 
     lm_scale_list = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
@@ -464,6 +476,26 @@ def decode_one_batch(
             G_with_epsilon_loops=G,
             lm_scale_list=lm_scale_list,
         )
+    elif "attention-decoder" in params.decoding_method:
+        # lattice uses a 3-gram Lm. We rescore it with a 4-gram LM.
+        # lattice = rescore_with_whole_lattice(
+        #     lattice=lattice,
+        #     G_with_epsilon_loops=G,
+        #     lm_scale_list=None,
+        # )
+        # TODO: pass `lattice` instead of `rescored_lattice` to
+        # `rescore_with_attention_decoder`
+
+        best_path_dict = rescore_with_attention_decoder(
+            lattice=lattice,
+            num_paths=params.num_paths,
+            model=model.attention_decoder,
+            memory=encoder_out.permute(1, 0, 2),
+            memory_key_padding_mask=make_pad_mask(encoder_out_lens),
+            sos_id=sos_id,
+            eos_id=eos_id,
+            nbest_scale=params.nbest_scale,
+        )
     else:
         assert False, f"Unsupported decoding method: {params.decoding_method}"
 
@@ -471,7 +503,11 @@ def decode_one_batch(
     if best_path_dict is not None:
         for lm_scale_str, best_path in best_path_dict.items():
             hyps = get_texts(best_path)
-            hyps = [[word_table[i] for i in ids] for ids in hyps]
+            if "ctc-decoding" in params.decoding_method:
+                hyps = bpe_model.decode(hyps)
+                hyps = [s.split() for s in hyps]
+            else:
+                hyps = [[word_table[i] for i in ids] for ids in hyps]
             ans[lm_scale_str] = hyps
     else:
         ans = None
@@ -631,6 +667,9 @@ def main():
         "nbest-rescoring",
         "whole-lattice-rescoring",
         "nbest-oracle",
+        "attention-decoder",
+        "ctc-decoding-nbest",
+        "ctc-decoding-attention-decoder",
     )
     params.res_dir = params.exp_dir / params.decoding_method
 
@@ -671,13 +710,18 @@ def main():
     # <blk> and <unk> are defined in local/train_bpe_model.py
     params.blank_id = 0
 
-    if params.decoding_method == "ctc-decoding":
+    # if params.decoding_method == "ctc-decoding":
+    if "ctc-decoding" in params.decoding_method:
         HLG = None
         H = k2.ctc_topo(
             max_token=max_token_id,
             modified=False,
             device=device,
         )
+        if not hasattr(H, "lm_scores"):
+            H.lm_scores = H.scores.clone()
+            H.tokens = H.aux_labels
+        
         bpe_model = spm.SentencePieceProcessor()
         bpe_model.load(str(params.lang_dir / "bpe.model"))
     else:
@@ -835,7 +879,9 @@ def main():
     test_other_dl = librispeech.test_dataloaders(test_other_cuts)
 
     test_sets = ["test-clean", "test-other"]
+    #test_sets = ["test-other"]
     test_dl = [test_clean_dl, test_other_dl]
+    #test_dl = [test_other_dl]
 
     for test_set, test_dl in zip(test_sets, test_dl):
         results_dict = decode_dataset(

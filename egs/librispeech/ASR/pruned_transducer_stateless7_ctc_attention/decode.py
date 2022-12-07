@@ -111,9 +111,12 @@ from beam_search import (
     fast_beam_search_nbest,
     fast_beam_search_nbest_LG,
     fast_beam_search_nbest_oracle,
+    fast_beam_search_with_nbest_attention_decoder_rescoring,
+    fast_beam_search_with_nbest_ctc_rescoring,
     fast_beam_search_one_best,
     greedy_search,
     greedy_search_batch,
+    greedy_search_batch_ctc,
     modified_beam_search,
 )
 from train import add_model_arguments, get_params, get_transducer_model
@@ -207,6 +210,7 @@ def get_parser():
         default="greedy_search",
         help="""Possible values are:
           - greedy_search
+          - greedy_search_with_ctc
           - beam_search
           - modified_beam_search
           - fast_beam_search
@@ -439,6 +443,54 @@ def decode_one_batch(
         )
         for hyp in sp.decode(hyp_tokens):
             hyps.append(hyp.split())
+    elif params.decoding_method == "fast_beam_search_nbest_attention_decoder":
+        hyps_dict = fast_beam_search_with_nbest_attention_decoder_rescoring(
+            model=model,
+            decoding_graph=decoding_graph,
+            encoder_out=encoder_out,
+            encoder_out_lens=encoder_out_lens,
+            beam=params.beam,
+            max_contexts=params.max_contexts,
+            max_states=params.max_states,
+            num_paths=params.num_paths,
+            sp=sp,
+            nbest_scale=params.nbest_scale,
+        )
+        ans = dict()
+        if hyps_dict is not None:
+            for attention_scale_str, hyps in hyps_dict.items():
+        
+                hyps = sp.decode(hyps)
+                hyps = [s.split() for s in hyps]
+    
+                ans[attention_scale_str] = hyps
+        else:
+            ans = None
+        return ans
+    elif params.decoding_method == "fast_beam_search_nbest_ctc_rescoring":
+        hyps_dict = fast_beam_search_with_nbest_ctc_rescoring(
+            model=model,
+            decoding_graph=decoding_graph,
+            encoder_out=encoder_out,
+            encoder_out_lens=encoder_out_lens,
+            beam=params.beam,
+            max_contexts=params.max_contexts,
+            max_states=params.max_states,
+            num_paths=params.num_paths,
+            sp=sp,
+            nbest_scale=params.nbest_scale,
+        )
+        ans = dict()
+        if hyps_dict is not None:
+            for attention_scale_str, hyps in hyps_dict.items():
+        
+                hyps = sp.decode(hyps)
+                hyps = [s.split() for s in hyps]
+    
+                ans[attention_scale_str] = hyps
+        else:
+            ans = None
+        return ans
     elif params.decoding_method == "fast_beam_search_nbest_oracle":
         hyp_tokens = fast_beam_search_nbest_oracle(
             model=model,
@@ -465,6 +517,19 @@ def decode_one_batch(
         )
         for hyp in sp.decode(hyp_tokens):
             hyps.append(hyp.split())
+    elif (
+        params.decoding_method == "greedy_search_with_ctc"
+        and params.max_sym_per_frame == 1
+    ):
+        hyp_tokens = greedy_search_batch_ctc(
+            model=model,
+            encoder_out=encoder_out,
+            encoder_out_lens=encoder_out_lens,
+        )
+        for hyp in sp.decode(hyp_tokens):
+            hyps.append(hyp.split())      
+
+      
     elif params.decoding_method == "modified_beam_search":
         hyp_tokens = modified_beam_search(
             model=model,
@@ -499,8 +564,8 @@ def decode_one_batch(
                 )
             hyps.append(sp.decode(hyp).split())
 
-    if params.decoding_method == "greedy_search":
-        return {"greedy_search": hyps}
+    if "greedy_search" in params.decoding_method:
+        return {params.decoding_method: hyps}
     elif "fast_beam_search" in params.decoding_method:
         key = f"beam_{params.beam}_"
         key += f"max_contexts_{params.max_contexts}_"
@@ -651,9 +716,12 @@ def main():
 
     assert params.decoding_method in (
         "greedy_search",
+        "greedy_search_with_ctc",
         "beam_search",
         "fast_beam_search",
         "fast_beam_search_nbest",
+        "fast_beam_search_nbest_attention_decoder",
+        "fast_beam_search_nbest_ctc_rescoring",
         "fast_beam_search_nbest_LG",
         "fast_beam_search_nbest_oracle",
         "modified_beam_search",

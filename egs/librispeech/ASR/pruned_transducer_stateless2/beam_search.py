@@ -31,6 +31,7 @@ from icefall.utils import (
     DecodingResults,
     add_eos,
     add_sos,
+    make_pad_mask,
     get_texts,
     get_texts_with_timestamp,
 )
@@ -716,6 +717,131 @@ def greedy_search_batch(
             timestamps=ans_timestamps,
         )
 
+def greedy_search_batch_ctc(
+    model: Transducer,
+    encoder_out: torch.Tensor,
+    encoder_out_lens: torch.Tensor,
+    return_timestamps: bool = False,
+) -> Union[List[List[int]], DecodingResults]:
+    """Greedy search in batch mode. It hardcodes --max-sym-per-frame=1.
+    Args:
+      model:
+        The transducer model.
+      encoder_out:
+        Output from the encoder. Its shape is (N, T, C), where N >= 1.
+      encoder_out_lens:
+        A 1-D tensor of shape (N,), containing number of valid frames in
+        encoder_out before padding.
+      return_timestamps:
+        Whether to return timestamps.
+    Returns:
+      If return_timestamps is False, return the decoded result.
+      Else, return a DecodingResults object containing
+      decoded result and corresponding timestamps.
+    """
+    assert encoder_out.ndim == 3
+    assert encoder_out.size(0) >= 1, encoder_out.size(0)
+
+    packed_encoder_out = torch.nn.utils.rnn.pack_padded_sequence(
+        input=encoder_out,
+        lengths=encoder_out_lens.cpu(),
+        batch_first=True,
+        enforce_sorted=False,
+    )
+
+    nnet_output = model.ctc_model(encoder_out)
+    packed_ctc_logits = torch.nn.utils.rnn.pack_padded_sequence(
+        input=nnet_output,
+        lengths=encoder_out_lens.cpu(),
+        batch_first=True,
+        enforce_sorted=False,
+    )
+
+    device = next(model.parameters()).device
+
+    blank_id = model.decoder.blank_id
+    unk_id = getattr(model, "unk_id", blank_id)
+    context_size = model.decoder.context_size
+
+    batch_size_list = packed_encoder_out.batch_sizes.tolist()
+    N = encoder_out.size(0)
+    assert torch.all(encoder_out_lens > 0), encoder_out_lens
+    assert N == batch_size_list[0], (N, batch_size_list)
+
+    hyps = [[-1] * (context_size - 1) + [blank_id] for _ in range(N)]
+
+    # timestamp[n][i] is the frame index after subsampling
+    # on which hyp[n][i] is decoded
+    timestamps = [[] for _ in range(N)]
+
+    decoder_input = torch.tensor(
+        hyps,
+        device=device,
+        dtype=torch.int64,
+    )  # (N, context_size)
+
+    decoder_out = model.decoder(decoder_input, need_pad=False)
+    decoder_out = model.joiner.decoder_proj(decoder_out)
+    # decoder_out: (N, 1, decoder_out_dim)
+
+    encoder_out = model.joiner.encoder_proj(packed_encoder_out.data)
+
+    offset = 0
+    for (t, batch_size) in enumerate(batch_size_list):
+        start = offset
+        end = offset + batch_size
+        current_ctc_logits = packed_ctc_logits.data[start:end]
+        current_encoder_out = encoder_out.data[start:end]
+        current_encoder_out = current_encoder_out.unsqueeze(1).unsqueeze(1)
+        # current_encoder_out's shape: (batch_size, 1, 1, encoder_out_dim)
+        offset = end
+
+        decoder_out = decoder_out[:batch_size]
+
+        logits = model.joiner(
+            current_encoder_out, decoder_out.unsqueeze(1), project_input=False
+        )
+        # logits'shape (batch_size, 1, 1, vocab_size)
+
+        transducer_logits = logits.squeeze(1).squeeze(1)  # (batch_size, vocab_size)
+        assert transducer_logits.shape == current_ctc_logits.shape, f"{transduer_logits.shape}, {current_ctc_logits.shape}"
+
+        logits = 0.9 * transducer_logits + 0.1 * current_ctc_logits
+        
+        assert logits.ndim == 2, logits.shape
+        y = logits.argmax(dim=1).tolist()
+        emitted = False
+        for i, v in enumerate(y):
+            if v not in (blank_id, unk_id):
+                hyps[i].append(v)
+                timestamps[i].append(t)
+                emitted = True
+        if emitted:
+            # update decoder output
+            decoder_input = [h[-context_size:] for h in hyps[:batch_size]]
+            decoder_input = torch.tensor(
+                decoder_input,
+                device=device,
+                dtype=torch.int64,
+            )
+            decoder_out = model.decoder(decoder_input, need_pad=False)
+            decoder_out = model.joiner.decoder_proj(decoder_out)
+
+    sorted_ans = [h[context_size:] for h in hyps]
+    ans = []
+    ans_timestamps = []
+    unsorted_indices = packed_encoder_out.unsorted_indices.tolist()
+    for i in range(N):
+        ans.append(sorted_ans[unsorted_indices[i]])
+        ans_timestamps.append(timestamps[unsorted_indices[i]])
+
+    if not return_timestamps:
+        return ans
+    else:
+        return DecodingResults(
+            hyps=ans,
+            timestamps=ans_timestamps,
+        )
 
 @dataclass
 class Hypothesis:
@@ -1679,6 +1805,354 @@ def fast_beam_search_with_nbest_rnn_rescoring(
                 am_scores.values
                 + n_scale * ngram_lm_scores
                 + rnn_scale * rnn_lm_scores
+            )
+            ragged_tot_scores = k2.RaggedTensor(nbest.shape, tot_scores)
+            max_indexes = ragged_tot_scores.argmax()
+            best_path = k2.index_fsa(nbest.fsa, max_indexes)
+
+            if not return_timestamps:
+                ans[key] = get_texts(best_path)
+            else:
+                ans[key] = get_texts_with_timestamp(best_path)
+
+    return ans
+
+
+def fast_beam_search_with_nbest_attention_decoder_rescoring(
+    model: Transducer,
+    decoding_graph: k2.Fsa,
+    encoder_out: torch.Tensor,
+    encoder_out_lens: torch.Tensor,
+    beam: float,
+    max_states: int,
+    max_contexts: int,
+    num_paths: int,
+    sp: spm.SentencePieceProcessor,
+    attention_scale: float = None,
+    oov_word: str = "<UNK>",
+    use_double_scores: bool = True,
+    nbest_scale: float = 0.5,
+    temperature: float = 1.0,
+    return_timestamps: bool = False,
+) -> Dict[str, Union[List[List[int]], DecodingResults]]:
+    """It limits the maximum number of symbols per frame to 1.
+    A lattice is first obtained using fast beam search, num_path are selected
+    and rescored using a given language model and a rnn-lm.
+    The shortest path within the lattice is used as the final output.
+
+    Args:
+      model:
+        An instance of `Transducer`.
+      decoding_graph:
+        Decoding graph used for decoding, may be a TrivialGraph or a LG.
+      encoder_out:
+        A tensor of shape (N, T, C) from the encoder.
+      encoder_out_lens:
+        A tensor of shape (N,) containing the number of frames in `encoder_out`
+        before padding.
+      beam:
+        Beam value, similar to the beam used in Kaldi.
+      max_states:
+        Max states per stream per frame.
+      max_contexts:
+        Max contexts pre stream per frame.
+      ngram_lm_scale_list:
+        A list of floats representing LM score scales.
+      num_paths:
+        Number of paths to extract from the decoded lattice.
+      G:
+        An FsaVec containing only a single FSA. It is an n-gram LM.
+      sp:
+        The BPE model.
+      word_table:
+        The word symbol table.
+      rnn_lm_model:
+        A rnn-lm model used for LM rescoring
+      rnn_lm_scale_list:
+        A list of floats representing RNN score scales.
+      oov_word:
+        OOV words are replaced with this word.
+      use_double_scores:
+        True to use double precision for computation. False to use
+        single precision.
+      nbest_scale:
+        It's the scale applied to the lattice.scores. A smaller value
+        yields more unique paths.
+      temperature:
+        Softmax temperature.
+      return_timestamps:
+        Whether to return timestamps.
+    Returns:
+      Return the decoded result in a dict, where the key has the form
+      'ngram_lm_scale_xx' and the value is the decoded results
+      optionally with timestamps. `xx` is the ngram LM scale value
+      used during decoding, i.e., 0.1.
+    """
+    lattice = fast_beam_search(
+        model=model,
+        decoding_graph=decoding_graph,
+        encoder_out=encoder_out,
+        encoder_out_lens=encoder_out_lens,
+        beam=beam,
+        max_states=max_states,
+        max_contexts=max_contexts,
+        temperature=temperature,
+    )
+
+    nbest = Nbest.from_lattice(
+        lattice=lattice,
+        num_paths=num_paths,
+        use_double_scores=use_double_scores,
+        nbest_scale=nbest_scale,
+    )
+    # at this point, nbest.fsa.scores are all zeros.
+
+    nbest = nbest.intersect(lattice)
+    # Now nbest.fsa.scores contains acoustic scores
+
+    am_scores = nbest.tot_scores()
+
+    # Now we need to compute the LM scores of each path.
+    # (1) Get the token IDs of each Path. We assume the decoding_graph
+    # is an acceptor, i.e., lattice is also an acceptor
+    tokens_shape = nbest.fsa.arcs.shape().remove_axis(1)  # [path][arc]
+
+    tokens = k2.RaggedTensor(tokens_shape, nbest.fsa.labels.contiguous())
+    tokens = tokens.remove_values_leq(0)  # remove -1 and 0
+
+    token_list: List[List[int]] = tokens.tolist()
+
+    sos_id = sp.piece_to_id("sos_id")
+    eos_id = sp.piece_to_id("eos_id")
+
+
+    path_to_utt_map = nbest.shape.row_ids(1).to(torch.long)
+    # the shape of memory is (T, N, C), so we use axis=1 here
+    memory = encoder_out.permute(1, 0, 2)
+    expanded_memory = memory.index_select(1, path_to_utt_map)
+    memory_key_padding_mask = make_pad_mask(encoder_out_lens)
+    assert encoder_out_lens.shape[0] == memory.shape[1]
+    assert memory_key_padding_mask.shape[1]
+    if memory_key_padding_mask is not None:
+        # The shape of memory_key_padding_mask is (N, T), so we
+        # use axis=0 here.
+        expanded_memory_key_padding_mask = memory_key_padding_mask.index_select(
+            0, path_to_utt_map
+        )
+    else:
+        expanded_memory_key_padding_mask = None
+    token_ids = token_list
+
+    if len(token_ids) == 0:
+        print("Warning: rescore_with_attention_decoder(): empty token-ids")
+        return None
+
+    nll = model.attention_decoder.decoder_nll(
+        memory=expanded_memory,
+        memory_key_padding_mask=expanded_memory_key_padding_mask,
+        token_ids=token_ids,
+        sos_id=sos_id,
+        eos_id=eos_id,
+    )
+    assert nll.ndim == 2
+    assert nll.shape[0] == len(token_ids)
+
+    attention_scores = -nll.sum(dim=1)
+    ans: Dict[str, List[List[int]]] = {}
+
+    if attention_scale is None:
+        attention_scale_list = [0.01, 0.05, 0.08]
+        attention_scale_list += [0.1, 0.3, 0.5, 0.6, 0.7, 0.9, 1.0]
+        attention_scale_list += [1.1, 1.2, 1.3, 1.5, 1.7, 1.9, 2.0]
+        attention_scale_list += [2.1, 2.2, 2.3, 2.5, 3.0, 4.0, 5.0]
+    else:
+        attention_scale_list = [attention_scale]
+
+    for a_scale in attention_scale_list:
+            key = f"attention_scale_{a_scale}"
+            tot_scores = (
+                am_scores.values
+                + a_scale * attention_scores
+            )
+            ragged_tot_scores = k2.RaggedTensor(nbest.shape, tot_scores)
+            max_indexes = ragged_tot_scores.argmax()
+            best_path = k2.index_fsa(nbest.fsa, max_indexes)
+
+            if not return_timestamps:
+                ans[key] = get_texts(best_path)
+            else:
+                ans[key] = get_texts_with_timestamp(best_path)
+    return ans
+
+def fast_beam_search_with_nbest_ctc_rescoring(
+    model: Transducer,
+    decoding_graph: k2.Fsa,
+    encoder_out: torch.Tensor,
+    encoder_out_lens: torch.Tensor,
+    beam: float,
+    max_states: int,
+    max_contexts: int,
+    num_paths: int,
+    sp: spm.SentencePieceProcessor,
+    attention_scale: float = None,
+    oov_word: str = "<UNK>",
+    use_double_scores: bool = True,
+    nbest_scale: float = 0.5,
+    temperature: float = 1.0,
+    return_timestamps: bool = False,
+) -> Dict[str, Union[List[List[int]], DecodingResults]]:
+    """It limits the maximum number of symbols per frame to 1.
+    A lattice is first obtained using fast beam search, num_path are selected
+    and rescored using a given language model and a rnn-lm.
+    The shortest path within the lattice is used as the final output.
+
+    Args:
+      model:
+        An instance of `Transducer`.
+      decoding_graph:
+        Decoding graph used for decoding, may be a TrivialGraph or a LG.
+      encoder_out:
+        A tensor of shape (N, T, C) from the encoder.
+      encoder_out_lens:
+        A tensor of shape (N,) containing the number of frames in `encoder_out`
+        before padding.
+      beam:
+        Beam value, similar to the beam used in Kaldi.
+      max_states:
+        Max states per stream per frame.
+      max_contexts:
+        Max contexts pre stream per frame.
+      ngram_lm_scale_list:
+        A list of floats representing LM score scales.
+      num_paths:
+        Number of paths to extract from the decoded lattice.
+      G:
+        An FsaVec containing only a single FSA. It is an n-gram LM.
+      sp:
+        The BPE model.
+      word_table:
+        The word symbol table.
+      rnn_lm_model:
+        A rnn-lm model used for LM rescoring
+      rnn_lm_scale_list:
+        A list of floats representing RNN score scales.
+      oov_word:
+        OOV words are replaced with this word.
+      use_double_scores:
+        True to use double precision for computation. False to use
+        single precision.
+      nbest_scale:
+        It's the scale applied to the lattice.scores. A smaller value
+        yields more unique paths.
+      temperature:
+        Softmax temperature.
+      return_timestamps:
+        Whether to return timestamps.
+    Returns:
+      Return the decoded result in a dict, where the key has the form
+      'ngram_lm_scale_xx' and the value is the decoded results
+      optionally with timestamps. `xx` is the ngram LM scale value
+      used during decoding, i.e., 0.1.
+    """
+    lattice = fast_beam_search(
+        model=model,
+        decoding_graph=decoding_graph,
+        encoder_out=encoder_out,
+        encoder_out_lens=encoder_out_lens,
+        beam=beam,
+        max_states=max_states,
+        max_contexts=max_contexts,
+        temperature=temperature,
+    )
+
+    nbest = Nbest.from_lattice(
+        lattice=lattice,
+        num_paths=num_paths,
+        use_double_scores=use_double_scores,
+        nbest_scale=nbest_scale,
+    )
+    # at this point, nbest.fsa.scores are all zeros.
+
+    nbest = nbest.intersect(lattice)
+    # Now nbest.fsa.scores contains acoustic scores
+
+    am_scores = nbest.tot_scores()
+
+    # Now we need to compute the LM scores of each path.
+    # (1) Get the token IDs of each Path. We assume the decoding_graph
+    # is an acceptor, i.e., lattice is also an acceptor
+    tokens_shape = nbest.fsa.arcs.shape().remove_axis(1)  # [path][arc]
+
+    tokens = k2.RaggedTensor(tokens_shape, nbest.fsa.labels.contiguous())
+    tokens = tokens.remove_values_leq(0)  # remove -1 and 0
+
+    token_list: List[List[int]] = tokens.tolist()
+
+    sos_id = sp.piece_to_id("sos_id")
+    eos_id = sp.piece_to_id("eos_id")
+
+
+    path_to_utt_map = nbest.shape.row_ids(1).to(torch.long)
+    encoder_output = model.ctc_model(encoder_out)
+    # the shape of memory is (T, N, C), so we use axis=1 here
+    memory = encoder_out.permute(1, 0, 2)
+    expanded_memory = memory.index_select(1, path_to_utt_map)
+    memory_key_padding_mask = make_pad_mask(encoder_out_lens)
+    assert encoder_out_lens.shape[0] == memory.shape[1]
+    assert memory_key_padding_mask.shape[1]
+    if memory_key_padding_mask is not None:
+        # The shape of memory_key_padding_mask is (N, T), so we
+        # use axis=0 here.
+        expanded_memory_key_padding_mask = memory_key_padding_mask.index_select(
+            0, path_to_utt_map
+        )
+    else:
+        expanded_memory_key_padding_mask = None
+    token_ids = token_list
+
+    if len(token_ids) == 0:
+        print("Warning: rescore_with_attention_decoder(): empty token-ids")
+        return None
+    
+    targets = torch.tensor(
+        [item for sublist in token_list for item in sublist],
+        device=memory.device,
+        dtype=torch.int64,
+    )
+
+    target_lengths = torch.tensor(
+        [len(tokens) for tokens in token_list],
+        device=memory.device,
+        dtype=torch.int64,
+    )
+
+    expanded_encoder_out_lens = encoder_out_lens.index_select(
+            0, path_to_utt_map
+    )
+    ctc_loss = torch.nn.functional.ctc_loss(
+        log_probs=expanded_memory,  # (T, N, C)
+        targets=targets,
+        input_lengths=expanded_encoder_out_lens,
+        target_lengths=target_lengths,
+        reduction="none",
+    )
+    attention_scores = ctc_loss
+
+    ans: Dict[str, List[List[int]]] = {}
+
+    if attention_scale is None:
+        attention_scale_list = [0.01, 0.05, 0.08]
+        attention_scale_list += [0.1, 0.3, 0.5, 0.6, 0.7, 0.9, 1.0]
+        attention_scale_list += [1.1, 1.2, 1.3, 1.5, 1.7, 1.9, 2.0]
+        attention_scale_list += [2.1, 2.2, 2.3, 2.5, 3.0, 4.0, 5.0]
+    else:
+        attention_scale_list = [attention_scale]
+
+    for a_scale in attention_scale_list:
+            key = f"attention_scale_{a_scale}"
+            tot_scores = (
+                am_scores.values
+                + a_scale * attention_scores
             )
             ragged_tot_scores = k2.RaggedTensor(nbest.shape, tot_scores)
             max_indexes = ragged_tot_scores.argmax()
