@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html class="writer-html5" lang="en" >
 <head>
-  <meta charset="utf-8" /><meta name="generator" content="Docutils 0.17.1: http://docutils.sourceforge.net/" />
+  <meta charset="utf-8" /><meta name="generator" content="Docutils 0.18.1: http://docutils.sourceforge.net/" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Icefall &mdash; icefall 0.1 documentation</title>
@@ -11,10 +11,9 @@
     <script src="_static/js/html5shiv.min.js"></script>
   <![endif]-->
   
-        <script data-url_root="./" id="documentation_options" src="_static/documentation_options.js"></script>
         <script src="_static/jquery.js"></script>
-        <script src="_static/underscore.js"></script>
         <script src="_static/_sphinx_javascript_frameworks_compat.js"></script>
+        <script data-url_root="./" id="documentation_options" src="_static/documentation_options.js"></script>
         <script src="_static/doctools.js"></script>
         <script src="_static/sphinx_highlight.js"></script>
     <script src="_static/js/theme.js"></script>
@@ -28,11 +27,15 @@
     <nav data-toggle="wy-nav-shift" class="wy-nav-side">
       <div class="wy-side-scroll">
         <div class="wy-side-nav-search" >
-            <a href="#" class="icon icon-home"> icefall
+
+          
+          
+          <a href="#" class="icon icon-home">
+            icefall
           </a>
 <div role="search">
   <form id="rtd-search-form" class="wy-form" action="search.html" method="get">
-    <input type="text" name="q" placeholder="Search docs" />
+    <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" />
     <input type="hidden" name="check_keywords" value="yes" />
     <input type="hidden" name="area" value="default" />
   </form>
@@ -51,6 +54,9 @@
 <li class="toctree-l1"><a class="reference internal" href="contributing/index.html">Contributing</a></li>
 <li class="toctree-l1"><a class="reference internal" href="huggingface/index.html">Huggingface</a></li>
 </ul>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="decoding-with-langugage-models/index.html">Decoding with language models</a></li>
+</ul>
 
         </div>
       </div>
@@ -65,7 +71,7 @@
         <div class="rst-content">
           <div role="navigation" aria-label="Page navigation">
   <ul class="wy-breadcrumbs">
-      <li><a href="#" class="icon icon-home"></a></li>
+      <li><a href="#" class="icon icon-home" aria-label="Home"></a></li>
       <li class="breadcrumb-item active">Icefall</li>
       <li class="wy-breadcrumbs-aside">
               <a href="https://github.com/k2-fsa/icefall/blob/master/docs/source/index.rst" class="fa fa-github"> Edit on GitHub</a>
@@ -85,10 +91,11 @@ speech recognition recipes using <a class="reference external" href="https://git
 <p class="caption" role="heading"><span class="caption-text">Contents:</span></p>
 <ul>
 <li class="toctree-l1"><a class="reference internal" href="installation/index.html">Installation</a><ul>
-<li class="toctree-l2"><a class="reference internal" href="installation/index.html#install-pytorch-and-torchaudio">(0) Install PyTorch and torchaudio</a></li>
-<li class="toctree-l2"><a class="reference internal" href="installation/index.html#install-k2">(1) Install k2</a></li>
-<li class="toctree-l2"><a class="reference internal" href="installation/index.html#install-lhotse">(2) Install lhotse</a></li>
-<li class="toctree-l2"><a class="reference internal" href="installation/index.html#download-icefall">(3) Download icefall</a></li>
+<li class="toctree-l2"><a class="reference internal" href="installation/index.html#install-cuda-toolkit-and-cudnn">(0) Install CUDA toolkit and cuDNN</a></li>
+<li class="toctree-l2"><a class="reference internal" href="installation/index.html#install-pytorch-and-torchaudio">(1) Install PyTorch and torchaudio</a></li>
+<li class="toctree-l2"><a class="reference internal" href="installation/index.html#install-k2">(2) Install k2</a></li>
+<li class="toctree-l2"><a class="reference internal" href="installation/index.html#install-lhotse">(3) Install lhotse</a></li>
+<li class="toctree-l2"><a class="reference internal" href="installation/index.html#download-icefall">(4) Download icefall</a></li>
 <li class="toctree-l2"><a class="reference internal" href="installation/index.html#installation-example">Installation example</a></li>
 <li class="toctree-l2"><a class="reference internal" href="installation/index.html#test-your-installation">Test Your Installation</a></li>
 <li class="toctree-l2"><a class="reference internal" href="installation/index.html#youtube-video">YouTube Video</a></li>
@@ -97,6 +104,7 @@ speech recognition recipes using <a class="reference external" href="https://git
 <li class="toctree-l1"><a class="reference internal" href="faqs.html">Frequently Asked Questions (FAQs)</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="faqs.html#oserror-libtorch-hip-so-cannot-open-shared-object-file-no-such-file-or-directory">OSError: libtorch_hip.so: cannot open shared object file: no such file or directory</a></li>
 <li class="toctree-l2"><a class="reference internal" href="faqs.html#attributeerror-module-distutils-has-no-attribute-version">AttributeError: module ‘distutils’ has no attribute ‘version’</a></li>
+<li class="toctree-l2"><a class="reference internal" href="faqs.html#importerror-libpython3-10-so-1-0-cannot-open-shared-object-file-no-such-file-or-directory">ImportError: libpython3.10.so.1.0: cannot open shared object file: No such file or directory</a></li>
 </ul>
 </li>
 <li class="toctree-l1"><a class="reference internal" href="model-export/index.html">Model export</a><ul>
@@ -139,6 +147,16 @@ speech recognition recipes using <a class="reference external" href="https://git
 <li class="toctree-l1"><a class="reference internal" href="huggingface/index.html">Huggingface</a><ul>
 <li class="toctree-l2"><a class="reference internal" href="huggingface/pretrained-models.html">Pre-trained models</a></li>
 <li class="toctree-l2"><a class="reference internal" href="huggingface/spaces.html">Huggingface spaces</a></li>
+</ul>
+</li>
+</ul>
+</div>
+<div class="toctree-wrapper compound">
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="decoding-with-langugage-models/index.html">Decoding with language models</a><ul>
+<li class="toctree-l2"><a class="reference internal" href="decoding-with-langugage-models/shallow-fusion.html">Shallow fusion for Transducer</a></li>
+<li class="toctree-l2"><a class="reference internal" href="decoding-with-langugage-models/LODR.html">LODR for RNN Transducer</a></li>
+<li class="toctree-l2"><a class="reference internal" href="decoding-with-langugage-models/rescoring.html">LM rescoring for Transducer</a></li>
 </ul>
 </li>
 </ul>
