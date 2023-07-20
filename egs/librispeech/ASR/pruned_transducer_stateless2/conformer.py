@@ -920,9 +920,9 @@ class RelPositionMultiheadAttention(nn.Module):
         #self._pos_bias_v = self.pos_bias_v * self.pos_bias_v_scale.exp()
 
         self.input_in_proj_quantizer = TensorQuantizer(quant_nn.QuantLinear.default_quant_desc_input)
-        self.weight_in_proj_quantizer = TensorQuantizer(quant_nn.QuantLinear.default_quant_desc_input)
+        self.weight_in_proj_quantizer = TensorQuantizer(quant_nn.QuantLinear.default_quant_desc_weight)
         self.input_out_proj_quantizer = TensorQuantizer(quant_nn.QuantLinear.default_quant_desc_input)
-        self.weight_out_proj_quantizer = TensorQuantizer(quant_nn.QuantLinear.default_quant_desc_input)
+        self.weight_out_proj_quantizer = TensorQuantizer(quant_nn.QuantLinear.default_quant_desc_weight)
         self.q_quantizer = TensorQuantizer(quant_nn.QuantLinear.default_quant_desc_input)
         self.k_quantizer = TensorQuantizer(quant_nn.QuantLinear.default_quant_desc_input)
         self.v_quantizer = TensorQuantizer(quant_nn.QuantLinear.default_quant_desc_input)
