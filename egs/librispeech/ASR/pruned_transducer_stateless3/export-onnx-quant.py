@@ -445,7 +445,7 @@ def main():
 
 
     convert_scaled_to_non_scaled(model, inplace=True)
-    checkpoint = torch.load(f"{params.exp_dir}/epoch-888-all-residual-new-v2.pt", map_location="cpu")
+    checkpoint = torch.load(f"{params.exp_dir}/epoch-888-all-residual-new-back.pt", map_location="cpu")
     model.load_state_dict(checkpoint, strict=False)
     model.to(device)
     model.eval()
@@ -475,7 +475,7 @@ def main():
     if params.iter > 0:
         suffix = f"iter-{params.iter}"
     else:
-        suffix = f"epoch-{params.epoch}-quant-all-residual-new-v2"
+        suffix = f"epoch-{params.epoch}-quant-all-residual-new-back"
 
     suffix += f"-avg-{params.avg}"
 

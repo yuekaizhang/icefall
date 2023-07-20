@@ -288,8 +288,8 @@ def convert_scaled_to_non_scaled(
     d = {}
     for name, m in model.named_modules():
         if isinstance(m, ScaledLinear):
-            # if p.search(name) is not None:
-            #     continue
+            if p.search(name) is not None:
+                continue
             d[name] = scaled_linear_to_linear(m)
         elif isinstance(m, ScaledConv1d):
             d[name] = scaled_conv1d_to_conv1d(m)
