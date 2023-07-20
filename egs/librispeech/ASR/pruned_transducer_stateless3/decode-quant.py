@@ -25,106 +25,6 @@ Usage:
     --exp-dir ./pruned_transducer_stateless3/exp \
     --max-duration 600 \
     --decoding-method greedy_search
-
-(2) beam search (not recommended)
-./pruned_transducer_stateless3/decode.py \
-    --epoch 28 \
-    --avg 15 \
-    --exp-dir ./pruned_transducer_stateless3/exp \
-    --max-duration 600 \
-    --decoding-method beam_search \
-    --beam-size 4
-
-(3) modified beam search
-./pruned_transducer_stateless3/decode.py \
-    --epoch 28 \
-    --avg 15 \
-    --exp-dir ./pruned_transducer_stateless3/exp \
-    --max-duration 600 \
-    --decoding-method modified_beam_search \
-    --beam-size 4
-
-(4) fast beam search (one best)
-./pruned_transducer_stateless3/decode.py \
-    --epoch 28 \
-    --avg 15 \
-    --exp-dir ./pruned_transducer_stateless3/exp \
-    --max-duration 600 \
-    --decoding-method fast_beam_search \
-    --beam 20.0 \
-    --max-contexts 8 \
-    --max-states 64
-
-(5) fast beam search (nbest)
-./pruned_transducer_stateless3/decode.py \
-    --epoch 28 \
-    --avg 15 \
-    --exp-dir ./pruned_transducer_stateless3/exp \
-    --max-duration 600 \
-    --decoding-method fast_beam_search_nbest \
-    --beam 20.0 \
-    --max-contexts 8 \
-    --max-states 64 \
-    --num-paths 200 \
-    --nbest-scale 0.5
-
-(6) fast beam search (nbest oracle WER)
-./pruned_transducer_stateless3/decode.py \
-    --epoch 28 \
-    --avg 15 \
-    --exp-dir ./pruned_transducer_stateless3/exp \
-    --max-duration 600 \
-    --decoding-method fast_beam_search_nbest_oracle \
-    --beam 20.0 \
-    --max-contexts 8 \
-    --max-states 64 \
-    --num-paths 200 \
-    --nbest-scale 0.5
-
-(7) fast beam search (with LG)
-./pruned_transducer_stateless3/decode.py \
-    --epoch 28 \
-    --avg 15 \
-    --exp-dir ./pruned_transducer_stateless3/exp \
-    --max-duration 600 \
-    --decoding-method fast_beam_search_nbest_LG \
-    --beam 20.0 \
-    --max-contexts 8 \
-    --max-states 64
-
-(8) modified beam search (with LM shallow fusion)
-./pruned_transducer_stateless3/decode.py \
-    --epoch 28 \
-    --avg 15 \
-    --exp-dir ./pruned_transducer_stateless3/exp \
-    --max-duration 600 \
-    --decoding-method modified_beam_search_lm_shallow_fusion \
-    --beam-size 4 \
-    --lm-type rnn \
-    --lm-scale 0.3 \
-    --lm-exp-dir /path/to/LM \
-    --rnn-lm-epoch 99 \
-    --rnn-lm-avg 1 \
-    --rnn-lm-num-layers 3 \
-    --rnn-lm-tie-weights 1
-
-(9) modified beam search with LM shallow fusion + LODR
-./pruned_transducer_stateless3/decode.py \
-    --epoch 28 \
-    --avg 15 \
-    --max-duration 600 \
-    --exp-dir ./pruned_transducer_stateless3/exp \
-    --decoding-method modified_beam_search_LODR \
-    --beam-size 4 \
-    --lm-type rnn \
-    --lm-scale 0.4 \
-    --lm-exp-dir /path/to/LM \
-    --rnn-lm-epoch 99 \
-    --rnn-lm-avg 1 \
-    --rnn-lm-num-layers 3 \
-    --rnn-lm-tie-weights 1
-    --tokens-ngram 2 \
-    --ngram-lm-scale -0.16 \
 """
 
 import argparse
@@ -171,6 +71,125 @@ from icefall.utils import (
 )
 
 from scaling_converter import convert_scaled_to_non_scaled
+# int8
+from pytorch_quantization import nn as quant_nn
+from pytorch_quantization import calib
+from pytorch_quantization.tensor_quant import QuantDescriptor
+from pytorch_quantization import quant_modules
+from pytorch_quantization import nn as quant_nn
+#import pytorch_quantization
+quant_nn.TensorQuantizer.use_fb_fake_quant = True
+quant_modules.initialize()
+# quant_modules.initialize(float_module_list=["Conv1d, Conv2d"])
+#pytorch_quantization.utils.quant_logging.reset_logger_handler()
+def reset_logger_handler():
+    """Remove all handler in root logger"""
+    root_logger = logging.getLogger()
+    while root_logger.handlers:
+        print(len(root_logger.handlers))
+        root_logger.removeHandler(root_logger.handlers[0])
+reset_logger_handler()
+# def collect_stats(model, data_loader, num_batches):
+#     """Feed data to the network and collect statistic"""
+
+#     # Enable calibrators
+#     for name, module in model.named_modules():
+#         if isinstance(module, quant_nn.TensorQuantizer):
+#             if module._calibrator is not None:
+#                 module.disable_quant()
+#                 module.enable_calib()
+#             else:
+#                 module.disable()
+
+#     for i, (image, _) in tqdm(enumerate(data_loader), total=num_batches):
+#         model(image.cuda())
+#         if i >= num_batches:
+#             break
+
+#     # Disable calibrators
+#     for name, module in model.named_modules():
+#         if isinstance(module, quant_nn.TensorQuantizer):
+#             if module._calibrator is not None:
+#                 module.enable_quant()
+#                 module.disable_calib()
+#             else:
+#                 module.enable()
+
+def compute_amax(model, **kwargs):
+    # Load calib result
+    for name, module in model.named_modules():
+        if isinstance(module, quant_nn.TensorQuantizer):
+            if module._calibrator is not None:
+                if isinstance(module._calibrator, calib.MaxCalibrator):
+                    module.load_calib_amax()
+                else:
+                    module.load_calib_amax(**kwargs)
+            print(F"{name:40}: {module}")
+    model.cuda()
+
+def enable_calibration(model):
+    """Enable calibration of all *_input_quantizer modules in model."""
+
+    logging.info("Enabling Calibration")
+    for name, module in model.named_modules():
+        if isinstance(module, quant_nn.TensorQuantizer):
+            if module._calibrator is not None:
+                module.disable_quant()
+                module.enable_calib()
+            else:
+                module.disable()
+            logging.info(F"{name:80}: {module}")
+
+
+def finish_calibration(model):
+    """Disable calibration and load amax for all "*_input_quantizer modules in model."""
+
+    logging.info("Loading calibrated amax")
+    for name, module in model.named_modules():
+        if isinstance(module, quant_nn.TensorQuantizer):
+            if module._calibrator is not None:
+                if isinstance(module._calibrator, calib.MaxCalibrator):
+                    try:
+                        module.load_calib_amax(strict=True)
+                    except:
+                        print(name, 23333333333333333333333333333333, module)
+                    # calib_amax = module._calibrator.compute_amax()
+                    # if calib_amax is not None:
+                    #     module.load_calib_amax(strict=True)
+                    # else:
+                    #     print(name, "==========================")
+                else:
+                    module.load_calib_amax("percentile", percentile=0.999)
+                module.enable_quant()
+                module.disable_calib()
+                if 'joiner' in name or 'decoder' in name:
+                    if 'giga' not in name:
+                        print("======================", name, module)
+                # if 'decoder' in name or 'joiner' in name:
+                #     print(name, "==========================")
+                #     module.disable()
+            else:
+                module.enable()
+    model.cuda()
+    print_quant_summary(model)
+    #assert 1==2
+
+# It is a bit slow since we collect histograms on CPU
+# with torch.no_grad():
+#     collect_stats(model, data_loader, num_batches=2)
+#     compute_amax(model, method="percentile", percentile=99.99)
+
+def print_quant_summary(model):
+    """Print summary of all quantizer modules in the model."""
+
+    count = 0
+    for name, mod in model.named_modules():
+        if isinstance(mod, quant_nn.TensorQuantizer):
+            #print(f'{name:80} {mod}')
+            count += 1
+    #print(f'{count} TensorQuantizers found in model')
+
+
 LOG_EPS = math.log(1e-10)
 
 
@@ -769,6 +788,103 @@ def decode_one_batch(
             (f"beam_size_{params.beam_size}_temperature_{params.temperature}"): hyps
         }
 
+def calibrate_dataset(
+    dl: torch.utils.data.DataLoader,
+    params: AttributeDict,
+    model: nn.Module,
+    sp: spm.SentencePieceProcessor,
+    word_table: Optional[k2.SymbolTable] = None,
+    decoding_graph: Optional[k2.Fsa] = None,
+    G: Optional[k2.Fsa] = None,
+    ngram_lm: Optional[NgramLm] = None,
+    ngram_lm_scale: float = 1.0,
+    rnn_lm_model: Optional[RnnLmModel] = None,
+    LM: Optional[LmScorer] = None,
+    num_batch: int = 3,
+) -> Dict[str, List[Tuple[List[str], List[str]]]]:
+    """Decode dataset.
+
+    Args:
+      dl:
+        PyTorch's dataloader containing the dataset to decode.
+      params:
+        It is returned by :func:`get_params`.
+      model:
+        The neural model.
+      sp:
+        The BPE model.
+      word_table:
+        The word symbol table.
+      decoding_graph:
+        The decoding graph. Can be either a `k2.trivial_graph` or LG, Used
+        only when --decoding_method is fast_beam_search, fast_beam_search_LG, fast_beam_search_nbest,
+        fast_beam_search_nbest_oracle, and fast_beam_search_nbest_LG.
+      G:
+        Optional. Used only when decoding method is fast_beam_search,
+        fast_beam_search_nbest, fast_beam_search_nbest_oracle,
+        or fast_beam_search_with_nbest_rescoring.
+        It's an FsaVec containing an acceptor.
+      LM:
+        A neural network LM, used during shallow fusion
+    Returns:
+      Return a dict, whose key may be "greedy_search" if greedy search
+      is used, or it may be "beam_7" if beam size of 7 is used.
+      Its value is a list of tuples. Each tuple contains two elements:
+      The first is the reference transcript, and the second is the
+      predicted result.
+    """
+    num_cuts = 0
+
+    try:
+        num_batches = len(dl)
+    except TypeError:
+        num_batches = "?"
+
+    if params.decoding_method == "greedy_search":
+        log_interval = 50
+    else:
+        log_interval = 20
+
+    results = defaultdict(list)
+    enable_calibration(model)
+    for batch_idx, batch in enumerate(dl):
+        if batch_idx >= num_batch:
+            break
+        else:
+            print(23333333333333333333333333333333333333333333333333333, batch_idx)
+        texts = batch["supervisions"]["text"]
+        cut_ids = [cut.id for cut in batch["supervisions"]["cut"]]
+
+        hyps_dict = decode_one_batch(
+            params=params,
+            model=model,
+            sp=sp,
+            word_table=word_table,
+            decoding_graph=decoding_graph,
+            batch=batch,
+            G=G,
+            ngram_lm=ngram_lm,
+            ngram_lm_scale=ngram_lm_scale,
+            rnn_lm_model=rnn_lm_model,
+            LM=LM,
+        )
+    finish_calibration(model)
+        # for name, hyps in hyps_dict.items():
+        #     this_batch = []
+        #     assert len(hyps) == len(texts)
+        #     for cut_id, hyp_words, ref_text in zip(cut_ids, hyps, texts):
+        #         ref_words = ref_text.split()
+        #         this_batch.append((cut_id, ref_words, hyp_words))
+
+        #     results[name].extend(this_batch)
+
+        # num_cuts += len(texts)
+
+        # if batch_idx % log_interval == 0:
+        #     batch_str = f"{batch_idx}/{num_batches}"
+
+        #     logging.info(f"batch {batch_str}, cuts processed until now is {num_cuts}")
+    return results
 
 def decode_dataset(
     dl: torch.utils.data.DataLoader,
@@ -1088,12 +1204,28 @@ def main():
         logging.info(f"averaging {filenames}")
         model.to(device)
         model.load_state_dict(average_checkpoints(filenames, device=device))
-
+    #print(model.state_dict().keys())
     convert_scaled_to_non_scaled(model, inplace=True)
-    #torch.save(model.state_dict(), f"{params.exp_dir}/epoch-identity-old.pt")
-    checkpoint = torch.load(f"{params.exp_dir}/epoch-identity-old.pt", map_location="cpu")
-    model.load_state_dict(checkpoint, strict=True)
-
+    #print("after", model.state_dict().keys())
+    #torch.save(model.state_dict(), f"{params.exp_dir}/epoch-identity.pt")
+    #assert 4==5
+    #checkpoint = torch.load(f"{params.exp_dir}/epoch-888.pt", map_location="cpu")
+    #checkpoint = torch.load(f"{params.exp_dir}/epoch-identity.pt", map_location="cpu")
+    # for key, value in checkpoint.items():
+    #     if 'joiner' in key or 'decoder' in key or 'encoder' in key:
+    #         if 'giga' not in key:
+    #             if 'quant' in key and 'input' in key:
+    #                 print(key, value, value.shape, key)
+    # assert 2==3
+    # model.load_state_dict(checkpoint, strict=False)
+    #model.load_state_dict(checkpoint, strict=True)
+    # for name, module in model.named_modules():
+    #     if isinstance(module, quant_nn.TensorQuantizer):
+    #         if module._calibrator is not None:
+    # for name, module in model.named_modules():
+    #     if isinstance(module, quant_nn.TensorQuantizer):
+    #         print(233333333333333333333333333333333,name)
+    #         module.enable()
     model.to(device)
     model.eval()
     model.device = device
@@ -1200,9 +1332,38 @@ def main():
     test_clean_dl = asr_datamodule.test_dataloaders(test_clean_cuts)
     test_other_dl = asr_datamodule.test_dataloaders(test_other_cuts)
 
-    test_sets = ["test-clean", "test-other"]
-    test_dl = [test_clean_dl, test_other_dl]
+    # test_sets = ["test-clean", "test-other"]
+    # test_dl = [test_clean_dl, test_other_dl]
+    test_sets = ["test-clean"]
+    test_dl = [test_clean_dl]
+    # test_sets = ["test-other"]
+    # test_dl = [test_other_dl]    
+    #train_clean_100_cuts = librispeech.train_clean_100_cuts()
+    #train_clean_100_dl = asr_datamodule.test_dataloaders(train_clean_100_cuts)
+    calibrate_dataset(
+            dl=test_clean_dl,
+            params=params,
+            model=model,
+            sp=sp,
+            word_table=word_table,
+            decoding_graph=decoding_graph,
+            G=G,
+            ngram_lm=ngram_lm,
+            ngram_lm_scale=ngram_lm_scale,
+            rnn_lm_model=rnn_lm_model,
+            LM=LM,
+    )
+    calibrated_model_path = f"{params.exp_dir}/epoch-888-all-residual-new-v2.pt"
+    torch.save(model.state_dict(), calibrated_model_path)
+    #exit()
+    # for key in model.keys():
+    #     if key.endswith("quantizer._amax"):
+    #         print(key)
+    # assert 3==4
+    # for name, module in model.named_modules():
+    #     if isinstance(module, quant_nn.TensorQuantizer):
 
+    logging.info("Decoding using quant model started")
     for test_set, test_dl in zip(test_sets, test_dl):
         results_dict = decode_dataset(
             dl=test_dl,

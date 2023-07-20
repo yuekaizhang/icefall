@@ -27,6 +27,8 @@ from torch import _VF, Tensor
 
 from icefall.utils import is_jit_tracing
 
+#from pytorch_quantization import nn as quant_nn
+#from pytorch_quantization.nn.modules.tensor_quantizer import TensorQuantizer
 
 def _ntuple(n):
     def parse(x):
@@ -695,10 +697,18 @@ class DoubleSwishFunction(torch.autograd.Function):
 
 
 class DoubleSwish(torch.nn.Module):
+    # def __init__(
+    #     self,
+    # ) -> None:
+    #     super(DoubleSwish, self).__init__()
+    #     self.mul_left_quantizer = TensorQuantizer(quant_nn.QuantLinear.default_quant_desc_input)
+    #     self.mul_right_quantizer = TensorQuantizer(quant_nn.QuantLinear.default_quant_desc_input)
+
     def forward(self, x: Tensor) -> Tensor:
         """Return double-swish activation function which is an approximation to Swish(Swish(x)),
         that we approximate closely with x * sigmoid(x-1).
         """
+        #return self.mul_left_quantizer(x) * self.mul_right_quantizer(torch.sigmoid(x - 1.0))
         if torch.jit.is_scripting() or is_jit_tracing():
             return x * torch.sigmoid(x - 1.0)
         else:

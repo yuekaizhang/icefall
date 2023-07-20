@@ -263,6 +263,7 @@ def main():
         args.decoding_method == "greedy_search"
     ), "Only supports greedy_search currently."
     res_dir = Path(args.exp_dir) / f"onnx-{args.decoding_method}"
+    print(res_dir, 23333333333333333333333)
 
     setup_logger(f"{res_dir}/log-decode")
     logging.info("Decoding started")

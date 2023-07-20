@@ -149,12 +149,14 @@ class OnnxModel:
     def init_encoder(self, encoder_model_filename: str):
         self.encoder = ort.InferenceSession(
             encoder_model_filename,
+            providers=['CPUExecutionProvider'],
             sess_options=self.session_opts,
         )
 
     def init_decoder(self, decoder_model_filename: str):
         self.decoder = ort.InferenceSession(
             decoder_model_filename,
+            providers=['CPUExecutionProvider'],
             sess_options=self.session_opts,
         )
 
@@ -168,6 +170,7 @@ class OnnxModel:
     def init_joiner(self, joiner_model_filename: str):
         self.joiner = ort.InferenceSession(
             joiner_model_filename,
+            providers=['CPUExecutionProvider'],
             sess_options=self.session_opts,
         )
 

@@ -34,6 +34,8 @@ from torch import Tensor, nn
 
 from icefall.utils import is_jit_tracing, make_pad_mask, subsequent_chunk_mask
 
+from pytorch_quantization import nn as quant_nn
+from pytorch_quantization.nn.modules.tensor_quantizer import TensorQuantizer
 
 class Conformer(EncoderInterface):
     """
@@ -469,6 +471,14 @@ class ConformerEncoderLayer(nn.Module):
         )
 
         self.dropout = nn.Dropout(dropout)
+        self.first_add_local_input = TensorQuantizer(quant_nn.QuantLinear.default_quant_desc_input)
+        self.first_add_residual = TensorQuantizer(quant_nn.QuantLinear.default_quant_desc_input)
+        self.second_add_local_input = TensorQuantizer(quant_nn.QuantLinear.default_quant_desc_input)
+        self.second_add_residual = TensorQuantizer(quant_nn.QuantLinear.default_quant_desc_input)
+        self.thrid_add_local_input = TensorQuantizer(quant_nn.QuantLinear.default_quant_desc_input)
+        self.thrid_add_residual = TensorQuantizer(quant_nn.QuantLinear.default_quant_desc_input)
+        self.fourth_add_local_input = TensorQuantizer(quant_nn.QuantLinear.default_quant_desc_input)
+        self.fourth_add_residual = TensorQuantizer(quant_nn.QuantLinear.default_quant_desc_input)
 
     def forward(
         self,
@@ -510,7 +520,7 @@ class ConformerEncoderLayer(nn.Module):
             alpha = 1.0
 
         # macaron style feed forward module
-        src = src + self.dropout(self.feed_forward_macaron(src))
+        src = self.first_add_residual(src) + self.first_add_local_input(self.dropout(self.feed_forward_macaron(src)))
 
         # multi-headed self-attention module
         src_att = self.self_attn(
@@ -522,14 +532,14 @@ class ConformerEncoderLayer(nn.Module):
             key_padding_mask=src_key_padding_mask,
         )[0]
 
-        src = src + self.dropout(src_att)
+        src = self.second_add_residual(src) + self.second_add_local_input(self.dropout(src_att))
 
         # convolution module
         conv, _ = self.conv_module(src, src_key_padding_mask=src_key_padding_mask)
-        src = src + self.dropout(conv)
+        src = self.thrid_add_residual(src) + self.thrid_add_local_input(self.dropout(conv))
 
         # feed forward module
-        src = src + self.dropout(self.feed_forward(src))
+        src = self.fourth_add_residual(src) + self.fourth_add_local_input(self.dropout(self.feed_forward(src)))
 
         src = self.norm_final(self.balancer(src))
 
@@ -906,6 +916,24 @@ class RelPositionMultiheadAttention(nn.Module):
         self.pos_bias_u_scale = nn.Parameter(torch.zeros(()).detach())
         self.pos_bias_v_scale = nn.Parameter(torch.zeros(()).detach())
         self._reset_parameters()
+        #self._pos_bias_u = self.pos_bias_u * self.pos_bias_u_scale.exp()
+        #self._pos_bias_v = self.pos_bias_v * self.pos_bias_v_scale.exp()
+
+        self.input_in_proj_quantizer = TensorQuantizer(quant_nn.QuantLinear.default_quant_desc_input)
+        self.weight_in_proj_quantizer = TensorQuantizer(quant_nn.QuantLinear.default_quant_desc_input)
+        self.input_out_proj_quantizer = TensorQuantizer(quant_nn.QuantLinear.default_quant_desc_input)
+        self.weight_out_proj_quantizer = TensorQuantizer(quant_nn.QuantLinear.default_quant_desc_input)
+        self.q_quantizer = TensorQuantizer(quant_nn.QuantLinear.default_quant_desc_input)
+        self.k_quantizer = TensorQuantizer(quant_nn.QuantLinear.default_quant_desc_input)
+        self.v_quantizer = TensorQuantizer(quant_nn.QuantLinear.default_quant_desc_input)
+        self.p_quantizer = TensorQuantizer(quant_nn.QuantLinear.default_quant_desc_input)
+        self.pos_bias_v_quantizer = TensorQuantizer(quant_nn.QuantLinear.default_quant_desc_input)
+        self.pos_bias_u_quantizer = TensorQuantizer(quant_nn.QuantLinear.default_quant_desc_input)
+        self.q_with_bias_v_quantizer = TensorQuantizer(quant_nn.QuantLinear.default_quant_desc_input)
+        self.q_with_bias_u_quantizer = TensorQuantizer(quant_nn.QuantLinear.default_quant_desc_input)
+        self.matrix_ac_quantizer = TensorQuantizer(quant_nn.QuantLinear.default_quant_desc_input)
+        self.matrix_bd_quantizer = TensorQuantizer(quant_nn.QuantLinear.default_quant_desc_input)
+        self.attn_output_weights_quantizer = TensorQuantizer(quant_nn.QuantLinear.default_quant_desc_input)
 
     def _pos_bias_u(self):
         return self.pos_bias_u * self.pos_bias_u_scale.exp()
@@ -972,6 +1000,24 @@ class RelPositionMultiheadAttention(nn.Module):
             - attn_output_weights: :math:`(N, L, S)` where N is the batch size,
             L is the target sequence length, S is the source sequence length.
         """
+        # return self.multi_head_attention_forward(
+        #     query,
+        #     key,
+        #     value,
+        #     pos_emb,
+        #     self.embed_dim,
+        #     self.num_heads,
+        #     self.in_proj.get_weight(),
+        #     self.in_proj.get_bias(),
+        #     self.dropout,
+        #     self.out_proj.get_weight(),
+        #     self.out_proj.get_bias(),
+        #     training=self.training,
+        #     key_padding_mask=key_padding_mask,
+        #     need_weights=need_weights,
+        #     attn_mask=attn_mask,
+        #     left_context=left_context,
+        # )
         return self.multi_head_attention_forward(
             query,
             key,
@@ -979,11 +1025,11 @@ class RelPositionMultiheadAttention(nn.Module):
             pos_emb,
             self.embed_dim,
             self.num_heads,
-            self.in_proj.get_weight(),
-            self.in_proj.get_bias(),
+            self.in_proj.weight,
+            self.in_proj.bias,
             self.dropout,
-            self.out_proj.get_weight(),
-            self.out_proj.get_bias(),
+            self.out_proj.weight,
+            self.out_proj.bias,
             training=self.training,
             key_padding_mask=key_padding_mask,
             need_weights=need_weights,
@@ -1103,6 +1149,8 @@ class RelPositionMultiheadAttention(nn.Module):
             - attn_output_weights: :math:`(N, L, S)` where N is the batch size,
             L is the target sequence length, S is the source sequence length.
         """
+        in_proj_weight = self.weight_in_proj_quantizer(in_proj_weight)
+        out_proj_weight = self.weight_out_proj_quantizer(out_proj_weight)
 
         tgt_len, bsz, embed_dim = query.size()
         if not is_jit_tracing():
@@ -1119,7 +1167,7 @@ class RelPositionMultiheadAttention(nn.Module):
 
         if torch.equal(query, key) and torch.equal(key, value):
             # self-attention
-            q, k, v = nn.functional.linear(query, in_proj_weight, in_proj_bias).chunk(
+            q, k, v = nn.functional.linear(self.input_in_proj_quantizer(query), in_proj_weight, in_proj_bias).chunk(
                 3, dim=-1
             )
 
@@ -1132,7 +1180,7 @@ class RelPositionMultiheadAttention(nn.Module):
             _w = in_proj_weight[_start:_end, :]
             if _b is not None:
                 _b = _b[_start:_end]
-            q = nn.functional.linear(query, _w, _b)
+            q = nn.functional.linear(self.input_in_proj_quantizer(query), _w, _b)
 
             # This is inline in_proj function with in_proj_weight and in_proj_bias
             _b = in_proj_bias
@@ -1141,7 +1189,7 @@ class RelPositionMultiheadAttention(nn.Module):
             _w = in_proj_weight[_start:, :]
             if _b is not None:
                 _b = _b[_start:]
-            k, v = nn.functional.linear(key, _w, _b).chunk(2, dim=-1)
+            k, v = nn.functional.linear(self.input_in_proj_quantizer(key), _w, _b).chunk(2, dim=-1)
 
         else:
             # This is inline in_proj function with in_proj_weight and in_proj_bias
@@ -1151,7 +1199,7 @@ class RelPositionMultiheadAttention(nn.Module):
             _w = in_proj_weight[_start:_end, :]
             if _b is not None:
                 _b = _b[_start:_end]
-            q = nn.functional.linear(query, _w, _b)
+            q = nn.functional.linear(self.input_in_proj_quantizer(query), _w, _b)
 
             # This is inline in_proj function with in_proj_weight and in_proj_bias
             _b = in_proj_bias
@@ -1160,7 +1208,7 @@ class RelPositionMultiheadAttention(nn.Module):
             _w = in_proj_weight[_start:_end, :]
             if _b is not None:
                 _b = _b[_start:_end]
-            k = nn.functional.linear(key, _w, _b)
+            k = nn.functional.linear(self.input_in_proj_quantizer(key), _w, _b)
 
             # This is inline in_proj function with in_proj_weight and in_proj_bias
             _b = in_proj_bias
@@ -1169,7 +1217,7 @@ class RelPositionMultiheadAttention(nn.Module):
             _w = in_proj_weight[_start:, :]
             if _b is not None:
                 _b = _b[_start:]
-            v = nn.functional.linear(value, _w, _b)
+            v = nn.functional.linear(self.input_in_proj_quantizer(value), _w, _b)
 
         if attn_mask is not None:
             assert (
@@ -1235,11 +1283,11 @@ class RelPositionMultiheadAttention(nn.Module):
         # (batch, 2*time1, head, d_k) --> (batch, head, d_k, 2*time -1)
         p = p.permute(0, 2, 3, 1)
 
-        q_with_bias_u = (q + self._pos_bias_u()).transpose(
+        q_with_bias_u = (self.q_quantizer(q) + self.pos_bias_u_quantizer(self._pos_bias_u())).transpose(
             1, 2
         )  # (batch, head, time1, d_k)
 
-        q_with_bias_v = (q + self._pos_bias_v()).transpose(
+        q_with_bias_v = (self.q_quantizer(q) + self.pos_bias_v_quantizer(self._pos_bias_v())).transpose(
             1, 2
         )  # (batch, head, time1, d_k)
 
@@ -1247,13 +1295,13 @@ class RelPositionMultiheadAttention(nn.Module):
         # first compute matrix a and matrix c
         # as described in "Transformer-XL: Attentive Language Models Beyond a Fixed-Length Context" Section 3.3
         k = k.permute(1, 2, 3, 0)  # (batch, head, d_k, time2)
-        matrix_ac = torch.matmul(q_with_bias_u, k)  # (batch, head, time1, time2)
+        matrix_ac = torch.matmul(self.q_with_bias_u_quantizer(q_with_bias_u), self.k_quantizer(k))  # (batch, head, time1, time2)
 
         # compute matrix b and matrix d
-        matrix_bd = torch.matmul(q_with_bias_v, p)  # (batch, head, time1, 2*time1-1)
+        matrix_bd = torch.matmul(self.q_with_bias_v_quantizer(q_with_bias_v), self.p_quantizer(p))  # (batch, head, time1, 2*time1-1)
         matrix_bd = self.rel_shift(matrix_bd, left_context)
 
-        attn_output_weights = matrix_ac + matrix_bd  # (batch, head, time1, time2)
+        attn_output_weights = self.matrix_ac_quantizer(matrix_ac) + self.matrix_bd_quantizer(matrix_bd)  # (batch, head, time1, time2)
 
         attn_output_weights = attn_output_weights.view(bsz * num_heads, tgt_len, -1)
 
@@ -1316,7 +1364,7 @@ class RelPositionMultiheadAttention(nn.Module):
             attn_output_weights, p=dropout_p, training=training
         )
 
-        attn_output = torch.bmm(attn_output_weights, v)
+        attn_output = torch.bmm(self.attn_output_weights_quantizer(attn_output_weights), self.v_quantizer(v))
 
         if not is_jit_tracing():
             assert list(attn_output.size()) == [
@@ -1328,7 +1376,7 @@ class RelPositionMultiheadAttention(nn.Module):
         attn_output = (
             attn_output.transpose(0, 1).contiguous().view(tgt_len, bsz, embed_dim)
         )
-        attn_output = nn.functional.linear(attn_output, out_proj_weight, out_proj_bias)
+        attn_output = nn.functional.linear(self.input_out_proj_quantizer(attn_output), out_proj_weight, out_proj_bias)
 
         if need_weights:
             # average attention weights over heads

@@ -1238,9 +1238,10 @@ class SimpleDownsample(torch.nn.Module):
 
         src = src.reshape(d_seq_len, ds, batch_size, in_channels)
 
-        weights = self.bias.softmax(dim=0)
+        weights = self.bias.unsqueeze(-1).unsqueeze(-1)
+        weights = weights.softmax(dim=0)
         # weights: (downsample, 1, 1)
-        weights = weights.unsqueeze(-1).unsqueeze(-1)
+        # weights = weights.unsqueeze(-1).unsqueeze(-1)
 
         # ans1 is the first `in_channels` channels of the output
         ans = (src * weights).sum(dim=1)
@@ -1301,7 +1302,7 @@ class CompactRelPositionalEncoding(torch.nn.Module):
     def __init__(
         self, embed_dim: int,
             dropout_rate: FloatLike,
-            max_len: int = 1000,
+            max_len: int = 5000,
             length_factor: float = 1.0,
     ) -> None:
         """Construct a CompactRelPositionalEncoding object."""
@@ -1371,7 +1372,9 @@ class CompactRelPositionalEncoding(torch.nn.Module):
         Returns:
             positional embedding, of shape (batch, left_context_len + 2*time-1, `*`).
         """
-        self.extend_pe(x, left_context_len)
+        #self.extend_pe(x, left_context_len)
+        self.pe = self.pe.to(dtype=x.dtype, device=x.device)
+        #assert (x.size(0) + left_context_len) * 2 - 1 < self.pe.size(0)
         x_size_left = x.size(0) + left_context_len
         # length of positive side: x.size(0) + left_context_len
         # length of negative side: x.size(0)
