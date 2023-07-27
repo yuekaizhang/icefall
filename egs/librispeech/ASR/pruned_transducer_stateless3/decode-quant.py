@@ -1353,7 +1353,7 @@ def main():
             rnn_lm_model=rnn_lm_model,
             LM=LM,
     )
-    calibrated_model_path = f"{params.exp_dir}/epoch-888-all-residual-new-back.pt"
+    calibrated_model_path = f"{params.exp_dir}/epoch-233-nvbug-matrix-ac.pt"
     torch.save(model.state_dict(), calibrated_model_path)
     #exit()
     # for key in model.keys():

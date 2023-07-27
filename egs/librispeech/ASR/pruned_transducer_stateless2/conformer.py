@@ -931,7 +931,7 @@ class RelPositionMultiheadAttention(nn.Module):
         self.pos_bias_u_quantizer = TensorQuantizer(quant_nn.QuantLinear.default_quant_desc_input)
         self.q_with_bias_v_quantizer = TensorQuantizer(quant_nn.QuantLinear.default_quant_desc_input)
         self.q_with_bias_u_quantizer = TensorQuantizer(quant_nn.QuantLinear.default_quant_desc_input)
-        self.matrix_ac_quantizer = TensorQuantizer(quant_nn.QuantLinear.default_quant_desc_input)
+        # self.matrix_ac_quantizer = TensorQuantizer(quant_nn.QuantLinear.default_quant_desc_input)
         self.matrix_bd_quantizer = TensorQuantizer(quant_nn.QuantLinear.default_quant_desc_input)
         self.attn_output_weights_quantizer = TensorQuantizer(quant_nn.QuantLinear.default_quant_desc_input)
 
@@ -1283,7 +1283,8 @@ class RelPositionMultiheadAttention(nn.Module):
         matrix_bd = torch.matmul(self.q_with_bias_v_quantizer(q_with_bias_v), self.p_quantizer(p))  # (batch, head, time1, 2*time1-1)
         matrix_bd = self.rel_shift(matrix_bd, left_context)
 
-        attn_output_weights = self.matrix_ac_quantizer(matrix_ac) + self.matrix_bd_quantizer(matrix_bd)  # (batch, head, time1, time2)
+        # attn_output_weights = self.matrix_ac_quantizer(matrix_ac) + self.matrix_bd_quantizer(matrix_bd)  # (batch, head, time1, time2)
+        attn_output_weights = matrix_ac + self.matrix_bd_quantizer(matrix_bd)  # (batch, head, time1, time2)
 
         attn_output_weights = attn_output_weights.view(bsz * num_heads, tgt_len, -1)
 
