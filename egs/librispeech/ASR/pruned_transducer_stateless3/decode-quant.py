@@ -79,8 +79,8 @@ from pytorch_quantization import quant_modules
 from pytorch_quantization import nn as quant_nn
 #import pytorch_quantization
 quant_nn.TensorQuantizer.use_fb_fake_quant = True
-quant_modules.initialize()
-# quant_modules.initialize(float_module_list=["Conv1d, Conv2d"])
+# quant_modules.initialize()
+quant_modules.initialize(float_module_list=["Conv1d", "Conv2d"])
 #pytorch_quantization.utils.quant_logging.reset_logger_handler()
 def reset_logger_handler():
     """Remove all handler in root logger"""
@@ -129,7 +129,7 @@ def compute_amax(model, **kwargs):
 
 def enable_calibration(model):
     """Enable calibration of all *_input_quantizer modules in model."""
-
+    #exit(0)
     logging.info("Enabling Calibration")
     for name, module in model.named_modules():
         if isinstance(module, quant_nn.TensorQuantizer):
@@ -152,7 +152,7 @@ def finish_calibration(model):
                     try:
                         module.load_calib_amax(strict=True)
                     except:
-                        print(name, 23333333333333333333333333333333, module)
+                        print(name, module)
                     # calib_amax = module._calibrator.compute_amax()
                     # if calib_amax is not None:
                     #     module.load_calib_amax(strict=True)
@@ -165,6 +165,10 @@ def finish_calibration(model):
                 if 'joiner' in name or 'decoder' in name:
                     if 'giga' not in name:
                         print("======================", name, module)
+                # if 'conv' in name and 'encoder' in name:
+                #     module.disable()
+                #     input()
+                #     print("233333333333333333333333333333", name, module)
                 # if 'decoder' in name or 'joiner' in name:
                 #     print(name, "==========================")
                 #     module.disable()
@@ -1353,7 +1357,7 @@ def main():
             rnn_lm_model=rnn_lm_model,
             LM=LM,
     )
-    calibrated_model_path = f"{params.exp_dir}/epoch-233-nvbug-matrix-ac.pt"
+    calibrated_model_path = f"{params.exp_dir}/epoch-233-nvbug-conv-rm-v2.pt"
     torch.save(model.state_dict(), calibrated_model_path)
     #exit()
     # for key in model.keys():

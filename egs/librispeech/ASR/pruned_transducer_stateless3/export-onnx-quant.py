@@ -63,7 +63,7 @@ from icefall.utils import setup_logger
 
 from pytorch_quantization import quant_modules
 from pytorch_quantization import nn as quant_nn
-quant_modules.initialize()
+quant_modules.initialize(float_module_list=["Conv1d", "Conv2d"])
 
 def get_parser():
     parser = argparse.ArgumentParser(
@@ -445,7 +445,7 @@ def main():
 
 
     convert_scaled_to_non_scaled(model, inplace=True)
-    checkpoint = torch.load(f"{params.exp_dir}/epoch-233-nvbug-matrix-ac.pt", map_location="cpu")
+    checkpoint = torch.load(f"{params.exp_dir}/epoch-233-nvbug-conv-rm-v2.pt", map_location="cpu")
     model.load_state_dict(checkpoint, strict=False)
     model.to(device)
     model.eval()
@@ -475,7 +475,7 @@ def main():
     if params.iter > 0:
         suffix = f"iter-{params.iter}"
     else:
-        suffix = f"epoch-{params.epoch}-233-nvbug-matrix-ac"
+        suffix = f"epoch-{params.epoch}-233-nvbug-conv-rm-v2"
 
     suffix += f"-avg-{params.avg}"
 
