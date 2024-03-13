@@ -4,7 +4,7 @@
   <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>VITS &mdash; icefall 0.1 documentation</title>
+  <title>VITS-LJSpeech &mdash; icefall 0.1 documentation</title>
       <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css?v=fa44fd50" />
       <link rel="stylesheet" type="text/css" href="../../../_static/css/theme.css?v=19f00094" />
 
@@ -21,7 +21,7 @@
     <script src="../../../_static/js/theme.js"></script>
     <link rel="index" title="Index" href="../../../genindex.html" />
     <link rel="search" title="Search" href="../../../search.html" />
-    <link rel="next" title="VITS" href="../vctk/vits.html" />
+    <link rel="next" title="VITS-VCTK" href="../vctk/vits.html" />
     <link rel="prev" title="TTS" href="../index.html" /> 
 </head>
 
@@ -58,7 +58,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../../Streaming-ASR/index.html">Streaming ASR</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../../RNN-LM/index.html">RNN-LM</a></li>
 <li class="toctree-l2 current"><a class="reference internal" href="../index.html">TTS</a><ul class="current">
-<li class="toctree-l3 current"><a class="current reference internal" href="#">VITS</a><ul>
+<li class="toctree-l3 current"><a class="current reference internal" href="#">VITS-LJSpeech</a><ul>
 <li class="toctree-l4"><a class="reference internal" href="#data-preparation">Data preparation</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#build-monotonic-alignment-search">Build Monotonic Alignment Search</a></li>
 <li class="toctree-l4"><a class="reference internal" href="#training">Training</a></li>
@@ -67,9 +67,10 @@
 <li class="toctree-l4"><a class="reference internal" href="#download-pretrained-models">Download pretrained models</a></li>
 </ul>
 </li>
-<li class="toctree-l3"><a class="reference internal" href="../vctk/vits.html">VITS</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../vctk/vits.html">VITS-VCTK</a></li>
 </ul>
 </li>
+<li class="toctree-l2"><a class="reference internal" href="../../Finetune/index.html">Fine-tune a pre-trained model</a></li>
 </ul>
 </li>
 </ul>
@@ -97,7 +98,7 @@
       <li><a href="../../../index.html" class="icon icon-home" aria-label="Home"></a></li>
           <li class="breadcrumb-item"><a href="../../index.html">Recipes</a></li>
           <li class="breadcrumb-item"><a href="../index.html">TTS</a></li>
-      <li class="breadcrumb-item active">VITS</li>
+      <li class="breadcrumb-item active">VITS-LJSpeech</li>
       <li class="wy-breadcrumbs-aside">
               <a href="https://github.com/k2-fsa/icefall/blob/master/docs/source/recipes/TTS/ljspeech/vits.rst" class="fa fa-github"> Edit on GitHub</a>
       </li>
@@ -107,8 +108,8 @@
           <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
            <div itemprop="articleBody">
              
-  <section id="vits">
-<h1>VITS<a class="headerlink" href="#vits" title="Permalink to this heading"></a></h1>
+  <section id="vits-ljspeech">
+<h1>VITS-LJSpeech<a class="headerlink" href="#vits-ljspeech" title="Permalink to this heading"></a></h1>
 <p>This tutorial shows you how to train an VITS model
 with the <a class="reference external" href="https://keithito.com/LJ-Speech-Dataset/">LJSpeech</a> dataset.</p>
 <div class="admonition note">
@@ -151,7 +152,8 @@ $<span class="w"> </span>./vits/train.py<span class="w"> </span><span class="se"
 <span class="w">    </span>--start-epoch<span class="w"> </span><span class="m">1</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--use-fp16<span class="w"> </span><span class="m">1</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--exp-dir<span class="w"> </span>vits/exp<span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--tokens<span class="w"> </span>data/tokens.txt
+<span class="w">    </span>--tokens<span class="w"> </span>data/tokens.txt<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--model-type<span class="w"> </span>high<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--max-duration<span class="w"> </span><span class="m">500</span>
 </pre></div>
 </div>
@@ -159,6 +161,11 @@ $<span class="w"> </span>./vits/train.py<span class="w"> </span><span class="se"
 <p class="admonition-title">Note</p>
 <p>You can adjust the hyper-parameters to control the size of the VITS model and
 the training configurations. For more details, please run <code class="docutils literal notranslate"><span class="pre">./vits/train.py</span> <span class="pre">--help</span></code>.</p>
+</div>
+<div class="admonition warning">
+<p class="admonition-title">Warning</p>
+<p>If you want a model that runs faster on CPU, please use <code class="docutils literal notranslate"><span class="pre">--model-type</span> <span class="pre">low</span></code>
+or <code class="docutils literal notranslate"><span class="pre">--model-type</span> <span class="pre">medium</span></code>.</p>
 </div>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
@@ -186,8 +193,8 @@ $<span class="w"> </span>./vits/infer.py<span class="w"> </span><span class="se"
 </section>
 <section id="export-models">
 <h2>Export models<a class="headerlink" href="#export-models" title="Permalink to this heading"></a></h2>
-<p>Currently we only support ONNX model exporting. It will generate two files in the given <code class="docutils literal notranslate"><span class="pre">exp-dir</span></code>:
-<code class="docutils literal notranslate"><span class="pre">vits-epoch-*.onnx</span></code> and <code class="docutils literal notranslate"><span class="pre">vits-epoch-*.int8.onnx</span></code>.</p>
+<p>Currently we only support ONNX model exporting. It will generate one file in the given <code class="docutils literal notranslate"><span class="pre">exp-dir</span></code>:
+<code class="docutils literal notranslate"><span class="pre">vits-epoch-*.onnx</span></code>.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>$<span class="w"> </span>./vits/export-onnx.py<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--epoch<span class="w"> </span><span class="m">1000</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--exp-dir<span class="w"> </span>vits/exp<span class="w"> </span><span class="se">\</span>
@@ -207,7 +214,9 @@ $<span class="w"> </span>./vits/infer.py<span class="w"> </span><span class="se"
 by visiting the following link:</p>
 <blockquote>
 <div><ul class="simple">
-<li><p><a class="reference external" href="https://huggingface.co/Zengwei/icefall-tts-ljspeech-vits-2023-11-29">https://huggingface.co/Zengwei/icefall-tts-ljspeech-vits-2023-11-29</a></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--model-type=high</span></code>: <a class="reference external" href="https://huggingface.co/Zengwei/icefall-tts-ljspeech-vits-2024-02-28">https://huggingface.co/Zengwei/icefall-tts-ljspeech-vits-2024-02-28</a></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--model-type=medium</span></code>: <a class="reference external" href="https://huggingface.co/csukuangfj/icefall-tts-ljspeech-vits-medium-2024-03-12">https://huggingface.co/csukuangfj/icefall-tts-ljspeech-vits-medium-2024-03-12</a></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">--model-type=low</span></code>: <a class="reference external" href="https://huggingface.co/csukuangfj/icefall-tts-ljspeech-vits-low-2024-03-12">https://huggingface.co/csukuangfj/icefall-tts-ljspeech-vits-low-2024-03-12</a></p></li>
 </ul>
 </div></blockquote>
 </section>
@@ -218,7 +227,7 @@ by visiting the following link:</p>
           </div>
           <footer><div class="rst-footer-buttons" role="navigation" aria-label="Footer">
         <a href="../index.html" class="btn btn-neutral float-left" title="TTS" accesskey="p" rel="prev"><span class="fa fa-arrow-circle-left" aria-hidden="true"></span> Previous</a>
-        <a href="../vctk/vits.html" class="btn btn-neutral float-right" title="VITS" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
+        <a href="../vctk/vits.html" class="btn btn-neutral float-right" title="VITS-VCTK" accesskey="n" rel="next">Next <span class="fa fa-arrow-circle-right" aria-hidden="true"></span></a>
     </div>
 
   <hr/>
