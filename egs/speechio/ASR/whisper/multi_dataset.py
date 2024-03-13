@@ -24,7 +24,7 @@ from lhotse import CutSet, load_manifest_lazy
 
 
 class MultiDataset:
-    def __init__(self, fbank_dir: str, start_index: int = 0, end_index: int = 26):
+    def __init__(self, fbank_dir: str, fbank_assistant_dir: str = "", start_index: int = 0, end_index: int = 26):
         """
         Args:
           manifest_dir:
@@ -34,6 +34,7 @@ class MultiDataset:
             - speechio_cuts_SPEECHIO_ASR_ZH00026.jsonl.gz
         """
         self.fbank_dir = Path(fbank_dir)
+        self.fbank_assistant_dir = Path(fbank_assistant_dir)
         self.start_index = start_index
         self.end_index = end_index
 
@@ -54,6 +55,27 @@ class MultiDataset:
 
             logging.info(f"Loading {path} set in lazy mode")
             test_cuts = load_manifest_lazy(self.fbank_dir / path)
+            results_dict[partition] = test_cuts
+
+        return results_dict
+
+    def test_assistant_model_cuts(self) -> Dict[str, CutSet]:
+        logging.info("About to get multidataset test cuts")
+
+        dataset_parts = []
+        for i in range(self.start_index, self.end_index + 1):
+            idx = f"{i}".zfill(2)
+            dataset_parts.append(f"SPEECHIO_ASR_ZH000{idx}")
+
+        prefix = "speechio"
+        suffix = "jsonl.gz"
+
+        results_dict = {}
+        for partition in dataset_parts:
+            path = f"{prefix}_cuts_{partition}.{suffix}"
+
+            logging.info(f"Loading {path} set in lazy mode")
+            test_cuts = load_manifest_lazy(self.fbank_assistant_dir / path)
             results_dict[partition] = test_cuts
 
         return results_dict

@@ -83,6 +83,12 @@ class AsrDataModule:
             help="Path to directory with train/valid/test cuts.",
         )
         group.add_argument(
+            "--manifest-assistant-dir",
+            type=Path,
+            default=Path("data/fbank_kaldi"),
+            help="Path to directory with kaldi train/valid/test cuts.",
+        )
+        group.add_argument(
             "--max-duration",
             type=int,
             default=300.0,
