@@ -464,16 +464,66 @@ def compute_loss(
         torch.LongTensor(text_tokens) for text_tokens in text_tokens_list
     ]
 
-    # 50256 is the index of <pad> for all whisper models
-    prev_outputs_tokens = _batch_tensors(
-        [tokens[:-1] for tokens in text_tokens_list], pad_value=50256
-    )
-    target_tokens = _batch_tensors(
-        [tokens[1:] for tokens in text_tokens_list], pad_value=50256
-    )
-    target_lengths = torch.LongTensor(
-        [tokens.shape[0] - 1 for tokens in text_tokens_list]
-    )
+    if enable_nar_training:
+        texts_substituted = substituate_error(texts, substituated_protion=0.5)
+
+
+        
+        random_number = random.random()
+        if random_number < 0.15:
+            texts_substituted = substituate_error(texts, substituated_protion=0.5)
+            text_tokens_list_substituated = [
+                list(tokenizer.sot_sequence_including_notimestamps)
+                + tokenizer.encode(text)
+                + [tokenizer.eot]
+                for text in texts_substituted
+            ]
+        elif random_number < 0.3 and random_number >= 0.15:
+            # for 15% of the time, we will change the token id with pad_value 50256
+            # change from text_tokens_list to text_tokens_list_substituated
+            # do not change first 4 tokens and last 1 token
+            # only 15% of portion of the tokens will be changed to 50256, randomly
+            # Assuming text_tokens_list is a list of tensor(s)
+            text_tokens_list_substituated = []
+
+            for text_tokens in text_tokens_list:
+                # Clone the input tensor to avoid modifying the original data
+                text_tokens_substituated = text_tokens.clone()
+                
+                # Calculate the number of tokens to change (excluding the first 4 and the last 1)
+                num_tokens_to_change = int((text_tokens_substituated.shape[0] - 5) * 0.15)
+                
+                # Generate indices to replace, without considering the first 4 and the last one
+                # Ensure the generated indices are unique to avoid replacing the same position more than once
+                indices_to_replace = torch.randperm(text_tokens_substituated.shape[0] - 5)[:num_tokens_to_change] + 4
+                
+                # Replace the selected tokens with 50256
+                text_tokens_substituated[indices_to_replace] = 50256
+                
+                text_tokens_list_substituated.append(text_tokens_substituated)
+
+        else:
+            text_tokens_list_substituated = text_tokens_list
+        # convert it to torch tensor
+        text_tokens_list_substituated = [
+            torch.LongTensor(text_tokens) for text_tokens in text_tokens_list_substituated
+        ]
+        # 50256 is the index of <pad> for all whisper models
+        prev_outputs_tokens = _batch_tensors(
+            [tokens[:-1] for tokens in text_tokens_list_substituated], pad_value=50256
+        )
+        target_tokens = _batch_tensors(
+            [tokens[1:] for tokens in text_tokens_list], pad_value=50256
+        )
+    else:
+        # 50256 is the index of <pad> for all whisper models
+        prev_outputs_tokens = _batch_tensors(
+            [tokens[:-1] for tokens in text_tokens_list], pad_value=50256
+        )
+
+        target_tokens = _batch_tensors(
+            [tokens[1:] for tokens in text_tokens_list], pad_value=50256
+        )
 
     decoder_criterion = LabelSmoothingLoss(
         ignore_index=50256, label_smoothing=0.1, reduction="sum"
