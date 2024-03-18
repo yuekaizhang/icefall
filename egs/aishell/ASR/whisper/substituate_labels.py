@@ -24,39 +24,36 @@ def load_chinese_chars(filename):
     #     chinese_chars[i] = (tokenizer.encode(chinese_chars[i]), chinese_chars[i])
     return chinese_chars
 
-def substitute_chinese_chars(text, chinese_chars):
-    text = list(text)
-    for i in range(len(text)):
-        for j in range(len(chinese_chars)):
-            if text[i] == chinese_chars[j][1]:
-                text[i] = chinese_chars[j][0]
-                break
-    return text
-    
+def generate_errors(texts, substitution_rate, chinese_chars):
+    # select according to the substitution rate
+    indices = random.sample(range(len(texts)), int(len(texts) * substitution_rate))
+    for idx in indices:
+        texts[idx] = substitute_chinese_chars(texts[idx], chinese_chars)
+    return texts
+
+def substitute_chinese_chars(text, chinese_chars, portion=0.15):
+    # select portion of the chars, substitute with a random Chinese character
+    chars = list(text)
+    num_chars = len(chars)
+    # at least substitute one character
+    num_substitute = max(1, int(num_chars * portion))
+    # generate random indices without same index
+    indices = random.sample(range(num_chars), num_substitute)
+    for idx in indices:
+        chars[idx] = random.choice(chinese_chars)
+    return ''.join(chars)
+
+
 if __name__ == "__main__":
     # token_path = '/mnt/samsung-t7/yuekai/asr/icefall/egs/speechio/ASR/zipformer/icefall-asr-multi-zh-hans-zipformer-ctc-2023-10-24/data/lang_bpe_2000/tokens.txt'
     token_path = '/mnt/samsung-t7/yuekai/asr/icefall/egs/speechio/ASR/zipformer/icefall-asr-aishell-zipformer-small-2023-10-24/data/lang_char/tokens.txt'
     chinese_chars = load_chinese_chars(token_path)
     # print(chinese_chars)
-    print(substitute_chinese_chars('我是中国人', chinese_chars))
+    # print(substitute_chinese_chars('我是中国人', chinese_chars))
+    # print(substitute_chinese_chars('今天天气不错我们一起去爬山', chinese_chars))
+    test_texts = ['我是中国人', '今天天气不错我们一起去爬山']
+    print(generate_errors(test_texts, 0.5, chinese_chars))
 
-    # tokenizer = whisper.tokenizer.get_tokenizer(
-    #     True,
-    #     num_languages=100,
-    #     language="zh",
-    #     task="transcribe",
-    # )
-    # text = "禁天天气不对"
-    # for char in text:
-    #     token_id = tokenizer.encode(char)
-    #     print(char, token_id)
-    # token_ids = tokenizer.encode(text)
-    # for token_id in token_ids:
-    #     print(tokenizer.decode([token_id]), token_id)
 
-    # with open("whisper_tokens.txt", 'w') as file:
-    #     for i in range(0, 52000):
-    #         symbol = tokenizer.decode([i])
-    #         print(f"{symbol} {i}")
-    #         file.write(f"{symbol} {i}\n")
     
+

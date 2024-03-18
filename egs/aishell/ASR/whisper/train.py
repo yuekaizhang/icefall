@@ -67,7 +67,7 @@ from torch.nn.functional import pad as pad_tensor
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
 from whisper_encoder_forward_monkey_patch import replace_whisper_encoder_forward
-
+from substituate_labels import generate_errors, load_chinese_chars
 from icefall import diagnostics
 from icefall.checkpoint import load_checkpoint, remove_checkpoints
 from icefall.checkpoint import save_checkpoint as save_checkpoint_impl
@@ -224,6 +224,12 @@ def get_parser():
         help="Whether to use half precision training.",
     )
 
+    parser.add_argument(
+        "--substituated-dict-path",
+        type=str,
+        default="whisper/aishell_tokens.txt",
+        help="The path to the substituated dict.",
+    )
     parser = deepspeed.add_config_arguments(parser)
 
     return parser
@@ -394,6 +400,7 @@ def compute_loss(
     model: Union[nn.Module, DDP],
     batch: dict,
     is_training: bool,
+    enable_nar_training: bool = True,
 ) -> Tuple[Tensor, MetricsTracker]:
     """
     Compute the loss for the given batch.
@@ -453,69 +460,73 @@ def compute_loss(
     # remove spaces in texts
     texts = [text.replace(" ", "") for text in texts]
 
-    text_tokens_list = [
-        list(tokenizer.sot_sequence_including_notimestamps)
-        + tokenizer.encode(text)
-        + [tokenizer.eot]
-        for text in texts
-    ]
-    # convert it to torch tensor
-    text_tokens_list = [
-        torch.LongTensor(text_tokens) for text_tokens in text_tokens_list
-    ]
-
     if enable_nar_training:
-        texts_substituted = substituate_error(texts, substituated_protion=0.5)
+        # valid loss may be random, since the generated text is not the same every time
+        extra_space = 0.3
+        texts_substituted = generate_errors(texts, substitution_rate=0.5, chinese_chars=params.substituated_dict)
 
-
-        
-        random_number = random.random()
-        if random_number < 0.15:
-            texts_substituted = substituate_error(texts, substituated_protion=0.5)
-            text_tokens_list_substituated = [
-                list(tokenizer.sot_sequence_including_notimestamps)
-                + tokenizer.encode(text)
-                + [tokenizer.eot]
-                for text in texts_substituted
-            ]
-        elif random_number < 0.3 and random_number >= 0.15:
-            # for 15% of the time, we will change the token id with pad_value 50256
-            # change from text_tokens_list to text_tokens_list_substituated
-            # do not change first 4 tokens and last 1 token
-            # only 15% of portion of the tokens will be changed to 50256, randomly
-            # Assuming text_tokens_list is a list of tensor(s)
-            text_tokens_list_substituated = []
-
-            for text_tokens in text_tokens_list:
-                # Clone the input tensor to avoid modifying the original data
-                text_tokens_substituated = text_tokens.clone()
-                
-                # Calculate the number of tokens to change (excluding the first 4 and the last 1)
-                num_tokens_to_change = int((text_tokens_substituated.shape[0] - 5) * 0.15)
-                
-                # Generate indices to replace, without considering the first 4 and the last one
-                # Ensure the generated indices are unique to avoid replacing the same position more than once
-                indices_to_replace = torch.randperm(text_tokens_substituated.shape[0] - 5)[:num_tokens_to_change] + 4
-                
-                # Replace the selected tokens with 50256
-                text_tokens_substituated[indices_to_replace] = 50256
-                
-                text_tokens_list_substituated.append(text_tokens_substituated)
-
-        else:
-            text_tokens_list_substituated = text_tokens_list
-        # convert it to torch tensor
         text_tokens_list_substituated = [
+            tokenizer.encode(text)
+            for text in texts_substituted
+        ]
+        # make extra spaces for input sequences
+        text_tokens_list_substituated = [
+            text_tokens + [50256] * int(len(text_tokens) * extra_space)
+            for text_tokens in text_tokens_list_substituated
+        ]
+        # save the length of the changed text tokens
+        text_tokens_substituted_pad_len = [
+            len(text_tokens) for text_tokens in text_tokens_list_substituated
+        ]
+        text_tokens_list_subsituated = [
+            list(tokenizer.sot_sequence_including_notimestamps)
+            + text_tokens
+            for text_tokens in text_tokens_list_substituated
+        ]        
+
+        text_tokens_list = [
+            tokenizer.encode(text)
+            for text in texts
+        ]
+        # pad with eos if the length is less than text_tokens_substituted_pad_len
+        text_tokens_list = [
+            list(tokenizer.sot_sequence_including_notimestamps)[1:]
+            + text_tokens + [tokenizer.eot] * (text_tokens_substituted_pad_len[i] - len(text_tokens) + 1)
+            for i, text_tokens in enumerate(text_tokens_list)
+        ]
+
+        # revise text_tokens_list_subsituated to the same length as text_tokens_list
+        # below is just for insurance, expect the length of elements in text_tokens_list_substituated is the same as text_tokens_list already
+        text_tokens_list_substituated = [
+            text_tokens + [50256] * (len(text_tokens_list[i]) - len(text_tokens))
+            for i, text_tokens in enumerate(text_tokens_list_substituated)
+        ]
+
+        # convert it to torch tensor
+        text_tokens_list_subsituated = [
             torch.LongTensor(text_tokens) for text_tokens in text_tokens_list_substituated
         ]
-        # 50256 is the index of <pad> for all whisper models
+        text_tokens_list = [
+            torch.LongTensor(text_tokens) for text_tokens in text_tokens_list
+        ]
+
         prev_outputs_tokens = _batch_tensors(
-            [tokens[:-1] for tokens in text_tokens_list_substituated], pad_value=50256
+            [tokens for tokens in text_tokens_list_substituated], pad_value=50256
         )
         target_tokens = _batch_tensors(
-            [tokens[1:] for tokens in text_tokens_list], pad_value=50256
+            [tokens for tokens in text_tokens_list], pad_value=50256
         )
     else:
+        text_tokens_list = [
+            list(tokenizer.sot_sequence_including_notimestamps)
+            + tokenizer.encode(text)
+            + [tokenizer.eot]
+            for text in texts
+        ]
+        # convert it to torch tensor
+        text_tokens_list = [
+            torch.LongTensor(text_tokens) for text_tokens in text_tokens_list
+        ]
         # 50256 is the index of <pad> for all whisper models
         prev_outputs_tokens = _batch_tensors(
             [tokens[:-1] for tokens in text_tokens_list], pad_value=50256
@@ -777,6 +788,7 @@ def run(rank, world_size, args):
     """
     params = get_params()
     params.update(vars(args))
+    params.substituated_dict = load_chinese_chars(params.substituated_dict_path)
 
     fix_random_seed(params.seed)
 
