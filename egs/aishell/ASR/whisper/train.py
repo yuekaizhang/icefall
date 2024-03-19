@@ -230,6 +230,14 @@ def get_parser():
         default="whisper/aishell_tokens.txt",
         help="The path to the substituated dict.",
     )
+
+    parser.add_argument(
+        "--enable-nar-training",
+        type=str2bool,
+        default=True,
+        help="Should NAR training enabled or not",
+    )
+
     parser = deepspeed.add_config_arguments(parser)
 
     return parser
@@ -460,7 +468,7 @@ def compute_loss(
     # remove spaces in texts
     texts = [text.replace(" ", "") for text in texts]
 
-    if enable_nar_training:
+    if params.enable_nar_training:
         # valid loss may be random, since the generated text is not the same every time
         extra_space = 0.3
         texts_substituted = generate_errors(texts, substitution_rate=0.5, chinese_chars=params.substituated_dict)
@@ -516,6 +524,12 @@ def compute_loss(
         target_tokens = _batch_tensors(
             [tokens for tokens in text_tokens_list], pad_value=50256
         )
+        if true:
+            print("text", text)
+            print("texts_substituted", texts_substituted)
+            print("text_tokens_list_substituated", text_tokens_list_subsituated)
+            print("text_tokens_list", text_tokens_list)
+
     else:
         text_tokens_list = [
             list(tokenizer.sot_sequence_including_notimestamps)
