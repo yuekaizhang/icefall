@@ -486,7 +486,7 @@ def compute_loss(
         text_tokens_substituted_pad_len = [
             len(text_tokens) for text_tokens in text_tokens_list_substituated
         ]
-        text_tokens_list_subsituated = [
+        text_tokens_list_substituated = [
             list(tokenizer.sot_sequence_including_notimestamps)
             + text_tokens
             for text_tokens in text_tokens_list_substituated
