@@ -368,7 +368,7 @@ def decode_one_batch(
     for h, h2, h3, a, t in zip(hyps, hyps_second, hyps_third, assistant_model_hyps, texts):
         if h2 != h3:
             print(h, h2, h3, a, t)
-    hyps = hyps_thrid
+    hyps = hyps_third
     hyps = remove_punctuation(hyps)
     hyps = to_simple(hyps)
     hyps = [params.normalizer.normalize(hyp) for hyp in hyps]
