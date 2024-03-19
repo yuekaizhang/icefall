@@ -48,11 +48,13 @@ import logging
 import re
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
+from torch.nn.functional import pad as pad_tensor
 
 import k2
 import torch
 import torch.nn as nn
+from torch import Tensor
 import whisper
 from asr_datamodule import AishellAsrDataModule
 from tn.chinese.normalizer import Normalizer
@@ -240,7 +242,7 @@ def get_params() -> AttributeDict:
 
 
 def verify_assistant_with_whisper(
-    feature: Tensor,
+    feature: torch.Tensor,
     params: AttributeDict,
     model: nn.Module,
     assistant_model_hyps: List[str],
@@ -589,9 +591,6 @@ def main():
 
     logging.info("Done!")
 
-
-torch.set_num_threads(1)
-torch.set_num_interop_threads(1)
 
 if __name__ == "__main__":
     main()
