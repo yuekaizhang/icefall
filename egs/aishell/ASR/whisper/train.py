@@ -524,7 +524,7 @@ def compute_loss(
         target_tokens = _batch_tensors(
             [tokens for tokens in text_tokens_list], pad_value=50256
         )
-        if true:
+        if True:
             print("text", text)
             print("texts_substituted", texts_substituted)
             print("text_tokens_list_substituated", text_tokens_list_subsituated)
