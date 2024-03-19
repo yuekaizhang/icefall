@@ -296,12 +296,14 @@ def verify_assistant_with_whisper(
         pred = text_logits.argmax(dim=-1)
         pred = pred.tolist()
 
-        for pred_tokens in pred:
+        for i, pred_tokens in enumerate(pred):
+            print(f'pred_tokens: {pred_tokens}')
+            print(f'prev_outputs_tokens[i]: {prev_outputs_tokens[i]}')
             hyp = tokenizer.decode(pred_tokens)
             s = re.sub(r'<\|.*?\|>', '', hyp)
             hyps.append(s)
-    # return hyps
-    return assistant_model_hyps
+    return hyps
+    # return assistant_model_hyps
 
 def decode_one_batch(
     params: AttributeDict,
