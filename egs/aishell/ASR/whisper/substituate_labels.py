@@ -26,10 +26,11 @@ def load_chinese_chars(filename):
 
 def generate_errors(texts, substitution_rate, chinese_chars):
     # select according to the substitution rate
+    texts_return = [text for text in texts]
     indices = random.sample(range(len(texts)), int(len(texts) * substitution_rate))
     for idx in indices:
-        texts[idx] = substitute_chinese_chars(texts[idx], chinese_chars)
-    return texts
+        texts_return[idx] = substitute_chinese_chars(texts[idx], chinese_chars)
+    return texts_return
 
 def substitute_chinese_chars(text, chinese_chars, portion=0.15):
     # select portion of the chars, substitute with a random Chinese character
