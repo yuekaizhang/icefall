@@ -300,8 +300,8 @@ def verify_assistant_with_whisper(
             hyp = tokenizer.decode(pred_tokens)
             s = re.sub(r'<\|.*?\|>', '', hyp)
             hyps.append(s)
-    return hyps
-    # return assistant_model_hyps
+    # return hyps
+    return assistant_model_hyps
 
 def decode_one_batch(
     params: AttributeDict,
@@ -358,17 +358,17 @@ def decode_one_batch(
     assistant_model_hyps = [assistant_model_hyp.replace(" ", "") for assistant_model_hyp in assistant_model_hyps]
     hyps = verify_assistant_with_whisper(feature, params, model, assistant_model_hyps, tokenizer)
 
-    hyps_second = verify_assistant_with_whisper(feature, params, model, hyps, tokenizer)
+    #hyps_second = verify_assistant_with_whisper(feature, params, model, hyps, tokenizer)
 
-    hyps_third = verify_assistant_with_whisper(feature, params, model, hyps_second, tokenizer)
+    #hyps_third = verify_assistant_with_whisper(feature, params, model, hyps_second, tokenizer)
 
     texts = batch["supervisions"]["text"]
     # remove spaces in texts
     texts = [text.replace(" ", "") for text in texts]
-    for h, h2, h3, a, t in zip(hyps, hyps_second, hyps_third, assistant_model_hyps, texts):
-        if h2 != h3:
-            print(h, h2, h3, a, t)
-    hyps = hyps_third
+    for h, a, t in zip(hyps, assistant_model_hyps, texts):
+        if h != a:
+            print(h, a, t)
+    # hyps = hyps_third
     hyps = remove_punctuation(hyps)
     hyps = to_simple(hyps)
     hyps = [params.normalizer.normalize(hyp) for hyp in hyps]
