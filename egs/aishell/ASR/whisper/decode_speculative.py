@@ -360,13 +360,15 @@ def decode_one_batch(
 
     hyps_second = verify_assistant_with_whisper(feature, params, model, hyps, tokenizer)
 
+    hyps_third = verify_assistant_with_whisper(feature, params, model, hyps_second, tokenizer)
+
     texts = batch["supervisions"]["text"]
     # remove spaces in texts
     texts = [text.replace(" ", "") for text in texts]
-    for h, h2, a, t in zip(hyps, hyps_second, assistant_model_hyps, texts):
-        if h != h2:
-            print(h, h2, a, t)
-    hyps = hyps_second
+    for h, h2, h3, a, t in zip(hyps, hyps_second, hyps_third, assistant_model_hyps, texts):
+        if h2 != h3:
+            print(h, h2, h3, a, t)
+    hyps = hyps_thrid
     hyps = remove_punctuation(hyps)
     hyps = to_simple(hyps)
     hyps = [params.normalizer.normalize(hyp) for hyp in hyps]
