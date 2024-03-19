@@ -7,10 +7,10 @@ torchrun --nproc_per_node 8 ./whisper/train.py \
   --max-duration 200 \
   --exp-dir whisper/exp_large_v2 \
   --model-name large-v2 \
-  --manifest-dir data/fbank_whisper \
+  --manifest-dir data/fbank \
   --deepspeed \
   --deepspeed_config ./whisper/ds_config_zero1.json
-  
+
 # python3 ./whisper/decode.py \
 #   --exp-dir whisper/exp_large_v2_sft \
 #   --model-name large-v2 \

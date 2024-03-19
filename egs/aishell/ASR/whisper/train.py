@@ -36,7 +36,7 @@ torchrun --nproc_per_node 8 ./whisper/train.py \
   --model-name medium
 """
 
-
+import os
 import argparse
 import copy
 import logging
@@ -511,7 +511,7 @@ def compute_loss(
         ]
 
         # convert it to torch tensor
-        text_tokens_list_subsituated = [
+        text_tokens_list_substituated = [
             torch.LongTensor(text_tokens) for text_tokens in text_tokens_list_substituated
         ]
         text_tokens_list = [
@@ -802,7 +802,8 @@ def run(rank, world_size, args):
     """
     params = get_params()
     params.update(vars(args))
-    params.substituated_dict = load_chinese_chars(params.substituated_dict_path)
+    if params.enable_nar_training:
+        params.substituated_dict = load_chinese_chars(params.substituated_dict_path)
 
     fix_random_seed(params.seed)
 
@@ -941,6 +942,7 @@ def run(rank, world_size, args):
                     f"{params.exp_dir}/epoch-{params.cur_epoch}.pt",
                     tag=f"epoch-{params.cur_epoch}",
                 )
+                os.system(f"rm -rf {params.exp_dir}/epoch-{params.cur_epoch}")
         else:
             save_checkpoint(
                 params=params,
