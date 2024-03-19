@@ -300,9 +300,11 @@ def verify_assistant_with_whisper(
             hyp = tokenizer.decode(pred_tokens)
             s = re.sub(r'<\|.*?\|>', '', hyp)
             hyps.append(s)
-    print(hyps, assistant_model_hyps)
-    # return hyps
-    return assistant_model_hyps
+    for h, a in zip(hyps, assistant_model_hyps):
+        if h != a:
+            print(h, a)
+    return hyps
+    # return assistant_model_hyps
 
 def decode_one_batch(
     params: AttributeDict,
@@ -356,7 +358,7 @@ def decode_one_batch(
     feature_assistant_model_len = batch_assistant_model["supervisions"]["num_frames"].to(device)
 
     assistant_model_hyps = assistant_model.decode(feature_assistant_model, feature_assistant_model_len)
-
+    assistant_model_hyps = [assistant_model_hyp.replace(" ", "") for assistant_model_hyp in assistant_model_hyps]
     hyps = verify_assistant_with_whisper(feature, params, model, assistant_model_hyps, tokenizer)
 
     hyps = remove_punctuation(hyps)
