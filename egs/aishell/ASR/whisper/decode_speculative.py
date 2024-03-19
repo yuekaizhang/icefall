@@ -297,11 +297,12 @@ def verify_assistant_with_whisper(
         pred = pred.tolist()
 
         for i, pred_tokens in enumerate(pred):
-            print(f'pred_tokens: {pred_tokens}')
-            print(f'prev_outputs_tokens[i]: {prev_outputs_tokens[i]}')
             hyp = tokenizer.decode(pred_tokens)
-            print(f'hyp: {hyp}')
-            print(f'assistant_model_hyps[i]: {assistant_model_hyps[i]}')
+            if hyp != assistant_model_hyps[i]:
+                print(f'pred_tokens: {pred_tokens}')
+                print(f'prev_outputs_tokens[i]: {prev_outputs_tokens[i]}')
+                print(f'hyp: {hyp}')
+                print(f'assistant_model_hyps[i]: {assistant_model_hyps[i]}')
             s = re.sub(r'<\|.*?\|>', '', hyp)
             hyps.append(s)
     return hyps
