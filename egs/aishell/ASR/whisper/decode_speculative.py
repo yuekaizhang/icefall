@@ -361,9 +361,9 @@ def decode_one_batch(
     texts = batch["supervisions"]["text"]
     # remove spaces in texts
     texts = [text.replace(" ", "") for text in texts]
-    for h, a in zip(hyps, assistant_model_hyps, texts):
+    for h, a, t in zip(hyps, assistant_model_hyps, texts):
         if h != a:
-            print(h, a, text)
+            print(h, a, t)
 
     hyps = remove_punctuation(hyps)
     hyps = to_simple(hyps)
