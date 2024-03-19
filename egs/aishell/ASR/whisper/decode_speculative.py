@@ -300,6 +300,8 @@ def verify_assistant_with_whisper(
             print(f'pred_tokens: {pred_tokens}')
             print(f'prev_outputs_tokens[i]: {prev_outputs_tokens[i]}')
             hyp = tokenizer.decode(pred_tokens)
+            print(f'hyp: {hyp}')
+            print(f'assistant_model_hyps[i]: {assistant_model_hyps[i]}')
             s = re.sub(r'<\|.*?\|>', '', hyp)
             hyps.append(s)
     return hyps
@@ -367,9 +369,9 @@ def decode_one_batch(
     texts = batch["supervisions"]["text"]
     # remove spaces in texts
     texts = [text.replace(" ", "") for text in texts]
-    for h, a, t in zip(hyps, assistant_model_hyps, texts):
-        if h != a:
-            print(h, a, t)
+    # for h, a, t in zip(hyps, assistant_model_hyps, texts):
+    #     if h != a:
+    #         print(h, a, t)
     # hyps = hyps_third
     hyps = remove_punctuation(hyps)
     hyps = to_simple(hyps)
