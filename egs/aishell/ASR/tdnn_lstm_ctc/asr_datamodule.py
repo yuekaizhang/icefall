@@ -76,6 +76,12 @@ class AishellAsrDataModule:
             help="Path to directory with train/valid/test cuts.",
         )
         group.add_argument(
+            "--manifest-assistant-dir",
+            type=Path,
+            default=Path("data/fbank_kaldi"),
+            help="Path to directory with train/valid/test cuts.",
+        )
+        group.add_argument(
             "--max-duration",
             type=int,
             default=200.0,
@@ -377,3 +383,13 @@ class AishellAsrDataModule:
     def test_cuts(self) -> List[CutSet]:
         logging.info("About to get test cuts")
         return load_manifest_lazy(self.args.manifest_dir / "aishell_cuts_test.jsonl.gz")
+
+    @lru_cache()
+    def valid_assistant_cuts(self) -> CutSet:
+        logging.info("About to get dev cuts")
+        return load_manifest_lazy(self.args.manifest_assistant_dir / "aishell_cuts_dev.jsonl.gz")
+
+    @lru_cache()
+    def test_assistant_cuts(self) -> List[CutSet]:
+        logging.info("About to get test cuts")
+        return load_manifest_lazy(self.args.manifest_assistant_dir / "aishell_cuts_test.jsonl.gz")

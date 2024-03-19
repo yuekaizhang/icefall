@@ -5,17 +5,8 @@ pip install -r whisper/requirements.txt
 
 torchrun --nproc_per_node 8 ./whisper/train.py \
   --max-duration 200 \
-  --exp-dir whisper/exp_large_v2 \
+  --exp-dir whisper/exp_large_v2_nar \
   --model-name large-v2 \
   --manifest-dir data/fbank \
   --deepspeed \
   --deepspeed_config ./whisper/ds_config_zero1.json
-
-# python3 ./whisper/decode.py \
-#   --exp-dir whisper/exp_large_v2_sft \
-#   --model-name large-v2 \
-#   --epoch 999 --avg 1 \
-#   --start-index 0 --end-index 26 \
-#   --remove-whisper-encoder-input-length-restriction True \
-#   --manifest-dir data/fbank \
-#   --beam-size 1 --max-duration 50
