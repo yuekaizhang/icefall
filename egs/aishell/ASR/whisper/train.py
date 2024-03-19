@@ -525,9 +525,9 @@ def compute_loss(
             [tokens for tokens in text_tokens_list], pad_value=50256
         )
         if True:
-            print("text", text)
+            print("text", texts)
             print("texts_substituted", texts_substituted)
-            print("text_tokens_list_substituated", text_tokens_list_subsituated)
+            print("text_tokens_list_substituated", text_tokens_list_substituated)
             print("text_tokens_list", text_tokens_list)
 
     else:
