@@ -30,19 +30,19 @@ class ParaWhisper(torch.nn.Module):
     """
 
     def __init__(self,
-                 whisper,
+                 whisper_model,
                  sampler: bool = True,
                  sampling_ratio: float = 0.75
                  ):
         super().__init__()
         self.cif_predictor = Cif()
-        self.whisper_model = whisper
+        self.whisper_model = whisper_model
         self.decoder_criterion = LabelSmoothingLoss(
             ignore_index=50256, label_smoothing=0.1, reduction="sum"
         )
         self.tokenizer = whisper.tokenizer.get_tokenizer(
-            whisper.is_multilingual,
-            num_languages=whisper.num_languages,
+            whisper_model.is_multilingual,
+            num_languages=whisper_model.num_languages,
             language="zh",
             task="transcribe",
         )
