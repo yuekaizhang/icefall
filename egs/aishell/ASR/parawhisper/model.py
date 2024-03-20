@@ -40,12 +40,13 @@ class ParaWhisper(torch.nn.Module):
         self.decoder_criterion = LabelSmoothingLoss(
             ignore_index=50256, label_smoothing=0.1, reduction="sum"
         )
-        self.tokenizer = whisper.tokenizer.get_tokenizer(
-            whisper_model.is_multilingual,
-            num_languages=whisper_model.num_languages,
-            language="zh",
-            task="transcribe",
-        )
+        if not sampler:
+            self.tokenizer = whisper.tokenizer.get_tokenizer(
+                whisper_model.is_multilingual,
+                num_languages=whisper_model.num_languages,
+                language="zh",
+                task="transcribe",
+            )
         # assert special_tokens is not None
         # self.sos = special_tokens['<sos>']
         # self.eos = special_tokens['<eos>']
@@ -97,7 +98,7 @@ class ParaWhisper(torch.nn.Module):
                 target_lengths.to(token_num.dtype),
                 reduction='sum',
             )
-            print("token_num", token_num, "target_lengths", target_lengths)
+            # print("token_num", token_num, "target_lengths", target_lengths)
             loss_quantity = loss_quantity / target_lengths.sum().to(token_num.dtype)
 
 

@@ -436,7 +436,7 @@ def main():
     replace_whisper_encoder_forward()
     replace_whisper_decoder_forward()
     model = whisper.load_model(params.model_name, "cpu")
-    model = ParaWhisper(model)
+    model = ParaWhisper(model, sampler=False)
     if params.epoch > 0:
         if params.avg > 1:
             start = params.epoch - params.avg

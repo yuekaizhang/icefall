@@ -40,6 +40,7 @@ class Cif(nn.Module):
         self.cif_conv1d = nn.Conv1d(
             idim,
             idim,
+            stride=2,
             l_order + r_order + 1,
             groups=idim if cnn_groups == 0 else cnn_groups)
         self.cif_output = nn.Linear(idim, 1)
