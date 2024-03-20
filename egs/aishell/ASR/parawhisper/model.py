@@ -107,7 +107,7 @@ class ParaWhisper(torch.nn.Module):
             target_tokens = target_tokens[:, ignore_prefix_size:]
             loss_decoder = self.decoder_criterion(text_logits, target_tokens.to(text_logits.device))
 
-            loss = loss_decoder + 10 * loss_quantity
+            loss = loss_decoder + 20 * loss_quantity
         assert loss.requires_grad == is_training
 
         return (loss, loss_decoder, loss_quantity)
