@@ -97,6 +97,7 @@ class ParaWhisper(torch.nn.Module):
                 target_lengths.to(token_num.dtype),
                 reduction='sum',
             )
+            print("token_num", token_num, "target_lengths", target_lengths)
             loss_quantity = loss_quantity / target_lengths.sum().to(token_num.dtype)
 
 
@@ -105,7 +106,7 @@ class ParaWhisper(torch.nn.Module):
             target_tokens = target_tokens[:, ignore_prefix_size:]
             loss_decoder = self.decoder_criterion(text_logits, target_tokens.to(text_logits.device))
 
-            loss = loss_decoder + loss_quantity
+            loss = loss_decoder + 10 * loss_quantity
         assert loss.requires_grad == is_training
 
         return (loss, loss_decoder, loss_quantity)
@@ -167,13 +168,16 @@ class ParaWhisper(torch.nn.Module):
         encoder_out_mask = make_non_pad_mask(encoder_out_len, encoder_out.shape[1]).unsqueeze(1)  # (B, 1, T)
         encoder_out_mask = encoder_out_mask.to(encoder_out.device)
         # cif predictor
+        # convert encoder_out to torch.float32
+        encoder_out = encoder_out.to(dtype=torch.float32)
         acoustic_embed, token_num, _, _,= self.cif_predictor(
             encoder_out, mask=encoder_out_mask)
         token_num = token_num.floor().to(speech_lengths.dtype)
 
         # decoder
-        decoder_out = self.whisper_model.decoder(encoder_out, encoder_out_mask,
-                                         acoustic_embed, token_num)
+        # decoder_out = self.whisper_model.decoder(encoder_out, encoder_out_mask,
+        #                                  acoustic_embed, token_num)
+        decoder_out = self.whisper_model.decoder(acoustic_embed, encoder_out)
         # decoder_out = decoder_out.log_softmax(dim=-1)
 
         pred = decoder_out.argmax(dim=-1)

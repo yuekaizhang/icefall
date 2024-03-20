@@ -24,9 +24,9 @@ export PYTHONPATH=$PYTHONPATH:/workspace/icefall
 #   --beam-size 1 --max-duration 1
 
 python3 ./parawhisper/decode.py \
-  --exp-dir parawhisper/exp_large_v2_nar \
+  --exp-dir parawhisper/exp_large_v2_cif \
   --model-name large-v2 \
   --epoch 1 --avg 1 \
   --remove-whisper-encoder-input-length-restriction True \
   --manifest-dir data/fbank \
-  --beam-size 1 --max-duration 1
+  --beam-size 1 --max-duration 200

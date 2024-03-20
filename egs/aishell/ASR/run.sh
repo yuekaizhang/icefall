@@ -5,7 +5,7 @@ pip install -r whisper/requirements.txt
 
 torchrun --nproc_per_node 8 ./parawhisper/train.py \
   --max-duration 200 \
-  --exp-dir parawhisper/exp_large_v2_nar \
+  --exp-dir parawhisper/exp_large_v2_cif \
   --model-name large-v2 \
   --manifest-dir data/fbank \
   --deepspeed \
