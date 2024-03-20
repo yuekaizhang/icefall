@@ -1,7 +1,8 @@
 import torch
 import torch.nn.functional as F
 import whisper
-
+from torch import Tensor
+from typing import Optional
 
 def forward(self, x: Tensor, xa: Tensor, kv_cache: Optional[dict] = None):
     """
@@ -17,7 +18,7 @@ def forward(self, x: Tensor, xa: Tensor, kv_cache: Optional[dict] = None):
     # )
     x = (
         x
-        + self.positional_embedding[offset : offset + x.shape[-1]]
+        + self.positional_embedding[offset : offset + x.shape[1]]
     )
     x = x.to(xa.dtype)
 

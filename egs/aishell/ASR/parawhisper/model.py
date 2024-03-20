@@ -33,7 +33,7 @@ class ParaWhisper(torch.nn.Module):
                  sampler: bool = True,
                  sampling_ratio: float = 0.75
                  ):
-
+        super().__init__()
         self.cif_predictor = Cif()
         self.whisper_model = whisper
         self.decoder_criterion = LabelSmoothingLoss(
@@ -72,9 +72,10 @@ class ParaWhisper(torch.nn.Module):
         with torch.set_grad_enabled(is_training):
             encoder_out = self.whisper_model.encoder(feature)
             # encoder_out_mask is feature_len // 2
-            encoder_out_mask = feature_len // 2
+            encoder_out_len = feature_len // 2
+            encoder_out_mask = make_non_pad_mask(encoder_out_len, encoder_out.shape[1]).unsqueeze(1)  # (B, 1, T)
             acoustic_embd, token_num, _, _ = self.cif_predictor(
-                encoder_out, mask=encoder_out_mask, target_label_length=target_lengths)
+                encoder_out, mask=encoder_out_mask, target_label_length=target_lengths.to(encoder_out.device))
 
             # 2 decoder with sampler
             # TODO(Mddct): support mwer here
@@ -84,7 +85,7 @@ class ParaWhisper(torch.nn.Module):
                 target_lengths,
                 acoustic_embd,
             )
-
+            target_lengths = target_lengths.to(encoder_out.device)
             loss_quantity = torch.nn.functional.l1_loss(
                 token_num,
                 target_lengths.to(token_num.dtype),
@@ -96,7 +97,7 @@ class ParaWhisper(torch.nn.Module):
             text_logits = self.whisper_model.decoder(acoustic_embd, encoder_out)
             text_logits = text_logits[:, ignore_prefix_size:, :]
             target_tokens = target_tokens[:, ignore_prefix_size:]
-            loss_decoder = self.decoder_criterion(text_logits, target_tokens.to(device))
+            loss_decoder = self.decoder_criterion(text_logits, target_tokens.to(text_logits.device))
 
             loss = loss_decoder + loss_quantity
         assert loss.requires_grad == is_training
@@ -113,6 +114,8 @@ class ParaWhisper(torch.nn.Module):
         # zero the ignore id
         #ys_pad = ys_pad * tgt_mask
         #ys_pad_embed = self.embed(ys_pad)  # [B, T, L]
+        ys_pad = ys_pad.to(encoder_out.device)
+        tgt_mask = tgt_mask.to(encoder_out.device)
         ys_pad_embed = self.whisper_model.decoder.token_embedding(ys_pad)
         with torch.no_grad():
             # decoder_out, _, _ = self.decoder(encoder_out, encoder_out_mask,
@@ -154,8 +157,8 @@ class ParaWhisper(torch.nn.Module):
     ) -> Dict[str, torch.Tensor]:
         # encoder
         encoder_out = self.whisper_model.encoder(speech)
-        encoder_out_mask = speech_lengths // 2
-
+        encoder_out_len = speech_lengths // 2
+        encoder_out_mask = make_non_pad_mask(encoder_out_len, encoder_out.shape[1]).unsqueeze(1)  # (B, 1, T)
         # cif predictor
         acoustic_embed, token_num, _, _,= self.cif_predictor(
             encoder_out, mask=encoder_out_mask)

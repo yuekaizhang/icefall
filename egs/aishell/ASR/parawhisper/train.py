@@ -730,8 +730,8 @@ def run(rank, world_size, args):
     """
     params = get_params()
     params.update(vars(args))
-    if params.enable_nar_training:
-        params.substituated_dict = load_chinese_chars(params.substituated_dict_path)
+    # if params.enable_nar_training:
+    #     params.substituated_dict = load_chinese_chars(params.substituated_dict_path)
 
     fix_random_seed(params.seed)
 
@@ -744,18 +744,19 @@ def run(rank, world_size, args):
     replace_whisper_decoder_forward()
     model = whisper.load_model(params.model_name, "cpu")
     del model.alignment_heads
-
-    model = ParaWhisper(model)
-
-    num_param = sum([p.numel() for p in model.parameters()])
-    logging.info(f"Number of model parameters: {num_param}")
-
+    
     tokenizer = whisper.tokenizer.get_tokenizer(
         model.is_multilingual,
         num_languages=model.num_languages,
         language="zh",
         task="transcribe",
     )
+
+    model = ParaWhisper(model)
+
+    num_param = sum([p.numel() for p in model.parameters()])
+    logging.info(f"Number of model parameters: {num_param}")
+
 
     model_avg: Optional[nn.Module] = None
     if rank == 0:
