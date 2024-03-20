@@ -16,7 +16,8 @@
 # FunASR(https://github.com/alibaba-damo-academy/FunASR)
 
 from typing import Dict, List, Optional, Tuple
-
+import re
+import whisper
 import torch
 from cif import Cif
 from label_smoothing import LabelSmoothingLoss
@@ -39,7 +40,12 @@ class ParaWhisper(torch.nn.Module):
         self.decoder_criterion = LabelSmoothingLoss(
             ignore_index=50256, label_smoothing=0.1, reduction="sum"
         )
-
+        self.tokenizer = whisper.tokenizer.get_tokenizer(
+            whisper.is_multilingual,
+            num_languages=whisper.num_languages,
+            language="zh",
+            task="transcribe",
+        )
         # assert special_tokens is not None
         # self.sos = special_tokens['<sos>']
         # self.eos = special_tokens['<eos>']
@@ -159,6 +165,7 @@ class ParaWhisper(torch.nn.Module):
         encoder_out = self.whisper_model.encoder(speech)
         encoder_out_len = speech_lengths // 2
         encoder_out_mask = make_non_pad_mask(encoder_out_len, encoder_out.shape[1]).unsqueeze(1)  # (B, 1, T)
+        encoder_out_mask = encoder_out_mask.to(encoder_out.device)
         # cif predictor
         acoustic_embed, token_num, _, _,= self.cif_predictor(
             encoder_out, mask=encoder_out_mask)
@@ -167,9 +174,16 @@ class ParaWhisper(torch.nn.Module):
         # decoder
         decoder_out = self.whisper_model.decoder(encoder_out, encoder_out_mask,
                                          acoustic_embed, token_num)
-        decoder_out = decoder_out.log_softmax(dim=-1)
+        # decoder_out = decoder_out.log_softmax(dim=-1)
 
-        return decoder_out
+        pred = decoder_out.argmax(dim=-1)
+        pred = pred.tolist()
+        hyps = []
+        for i, pred_tokens in enumerate(pred):
+            hyp = self.tokenizer.decode(pred_tokens)
+            s = re.sub(r'<\|.*?\|>', '', hyp)
+            hyps.append(s)
+        return hyps
 
 def make_non_pad_mask(lengths: torch.Tensor, max_len: int = 0) -> torch.Tensor:
     """Make mask tensor containing indices of padded part.

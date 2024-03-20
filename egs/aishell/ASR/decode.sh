@@ -12,13 +12,21 @@ export PYTHONPATH=$PYTHONPATH:/workspace/icefall
 #   --manifest-dir data/fbank \
 #   --beam-size 1 --max-duration 50
 
-export PYTHONPATH="${PYTHONPATH}:/workspace/icefall/egs/speechio/ASR/zipformer"
-python3 ./whisper/decode_speculative.py \
-  --exp-dir whisper/exp_large_v2_nar \
+# export PYTHONPATH="${PYTHONPATH}:/workspace/icefall/egs/speechio/ASR/zipformer"
+# python3 ./whisper/decode_speculative.py \
+#   --exp-dir whisper/exp_large_v2_nar \
+#   --model-name large-v2 \
+#   --epoch 9 --avg 6 \
+#   --remove-whisper-encoder-input-length-restriction True \
+#   --manifest-dir data/fbank \
+#   --nn-model-filename /workspace/icefall-asr-aishell-zipformer-small-2023-10-24/exp/pretrained.pt \
+#   --tokens /workspace/icefall-asr-aishell-zipformer-small-2023-10-24/data/lang_char/tokens.txt \
+#   --beam-size 1 --max-duration 1
+
+python3 ./parawhisper/decode.py \
+  --exp-dir parawhisper/exp_large_v2_nar \
   --model-name large-v2 \
-  --epoch 9 --avg 6 \
+  --epoch 1 --avg 1 \
   --remove-whisper-encoder-input-length-restriction True \
   --manifest-dir data/fbank \
-  --nn-model-filename /workspace/icefall-asr-aishell-zipformer-small-2023-10-24/exp/pretrained.pt \
-  --tokens /workspace/icefall-asr-aishell-zipformer-small-2023-10-24/data/lang_char/tokens.txt \
   --beam-size 1 --max-duration 1
