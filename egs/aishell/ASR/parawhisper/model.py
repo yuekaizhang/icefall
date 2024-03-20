@@ -1,0 +1,197 @@
+# Copyright (c) 2020 Mobvoi Inc. (authors: Binbin Zhang, Di Wu)
+#               2023 ASLP@NWPU (authors: He Wang, Fan Yu)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# Modified from ESPnet(https://github.com/espnet/espnet) and
+# FunASR(https://github.com/alibaba-damo-academy/FunASR)
+
+from typing import Dict, List, Optional, Tuple
+
+import torch
+from cif import Cif
+from label_smoothing import LabelSmoothingLoss
+
+class ParaWhisper(torch.nn.Module):
+    """ Paraformer: Fast and Accurate Parallel Transformer for
+        Non-autoregressive End-to-End Speech Recognition
+        see https://arxiv.org/pdf/2206.08317.pdf
+
+    """
+
+    def __init__(self,
+                 whisper,
+                 sampler: bool = True,
+                 sampling_ratio: float = 0.75
+                 ):
+
+        self.cif_predictor = Cif()
+        self.whisper_model = whisper
+        self.decoder_criterion = LabelSmoothingLoss(
+            ignore_index=50256, label_smoothing=0.1, reduction="sum"
+        )
+
+        # assert special_tokens is not None
+        # self.sos = special_tokens['<sos>']
+        # self.eos = special_tokens['<eos>']
+
+        self.sampler = sampler
+        self.sampling_ratio = sampling_ratio
+        # if sampler:
+        #     self.embed = self.decoder.embed
+        # else:
+        #     del self.decoder.embed
+        # NOTE(Mddct): add eos in tail of labels for predictor
+        # eg:
+        #    gt:         你 好 we@@ net
+        #    labels:     你 好 we@@ net eos
+        # self.add_eos = add_eos
+
+    @torch.jit.ignore(drop=True)
+    def forward(
+        self,
+        feature: torch.Tensor,
+        feature_len: torch.Tensor,
+        target_tokens: torch.Tensor,
+        target_lengths: torch.Tensor,
+        is_training: bool,
+    ):
+        """Frontend + Encoder + Predictor + Decoder + Calc loss
+        """
+        # ignore the first 3 tokens, which are always <|lang_id|>, <|transcibe|>, <|notimestampes|>
+        ignore_prefix_size = 3
+        with torch.set_grad_enabled(is_training):
+            encoder_out = self.whisper_model.encoder(feature)
+            # encoder_out_mask is feature_len // 2
+            encoder_out_mask = feature_len // 2
+            acoustic_embd, token_num, _, _ = self.cif_predictor(
+                encoder_out, mask=encoder_out_mask, target_label_length=target_lengths)
+
+            # 2 decoder with sampler
+            # TODO(Mddct): support mwer here
+            acoustic_embd = self._sampler(
+                encoder_out,
+                target_tokens,
+                target_lengths,
+                acoustic_embd,
+            )
+
+            loss_quantity = torch.nn.functional.l1_loss(
+                token_num,
+                target_lengths.to(token_num.dtype),
+                reduction='sum',
+            )
+            loss_quantity = loss_quantity / target_lengths.sum().to(token_num.dtype)
+
+
+            text_logits = self.whisper_model.decoder(acoustic_embd, encoder_out)
+            text_logits = text_logits[:, ignore_prefix_size:, :]
+            target_tokens = target_tokens[:, ignore_prefix_size:]
+            loss_decoder = self.decoder_criterion(text_logits, target_tokens.to(device))
+
+            loss = loss_decoder + loss_quantity
+        assert loss.requires_grad == is_training
+
+        return (loss, loss_decoder, loss_quantity)
+
+    @torch.jit.ignore(drop=True)
+    def _sampler(self, encoder_out, ys_pad, ys_pad_lens,
+                 pre_acoustic_embeds):
+        device = encoder_out.device
+        B, _ = ys_pad.size()
+
+        tgt_mask = make_non_pad_mask(ys_pad_lens)
+        # zero the ignore id
+        #ys_pad = ys_pad * tgt_mask
+        #ys_pad_embed = self.embed(ys_pad)  # [B, T, L]
+        ys_pad_embed = self.whisper_model.decoder.token_embedding(ys_pad)
+        with torch.no_grad():
+            # decoder_out, _, _ = self.decoder(encoder_out, encoder_out_mask,
+            #                                  pre_acoustic_embeds, ys_pad_lens)
+            decoder_out = self.whisper_model.decoder(pre_acoustic_embeds, encoder_out)
+            pred_tokens = decoder_out.argmax(-1)
+
+            nonpad_positions = tgt_mask
+            same_num = ((pred_tokens == ys_pad) * nonpad_positions).sum(1)
+            input_mask = torch.ones_like(
+                nonpad_positions,
+                device=device,
+                dtype=tgt_mask.dtype,
+            )
+            for li in range(B):
+                target_num = (ys_pad_lens[li] -
+                              same_num[li].sum()).float() * self.sampling_ratio
+                target_num = target_num.long()
+                if target_num > 0:
+                    input_mask[li].scatter_(
+                        dim=0,
+                        index=torch.randperm(ys_pad_lens[li],
+                                             device=device)[:target_num],
+                        value=0,
+                    )
+            input_mask = torch.where(input_mask > 0, 1, 0)
+            input_mask = input_mask * tgt_mask
+            input_mask_expand = input_mask.unsqueeze(2)  # [B, T, 1]
+
+        sematic_embeds = torch.where(input_mask_expand == 1,
+                                     pre_acoustic_embeds, ys_pad_embed)
+        # zero out the paddings
+        return sematic_embeds * tgt_mask.unsqueeze(2)
+
+    def decode(
+        self,
+        speech: torch.Tensor,
+        speech_lengths: torch.Tensor,
+    ) -> Dict[str, torch.Tensor]:
+        # encoder
+        encoder_out = self.whisper_model.encoder(speech)
+        encoder_out_mask = speech_lengths // 2
+
+        # cif predictor
+        acoustic_embed, token_num, _, _,= self.cif_predictor(
+            encoder_out, mask=encoder_out_mask)
+        token_num = token_num.floor().to(speech_lengths.dtype)
+
+        # decoder
+        decoder_out = self.whisper_model.decoder(encoder_out, encoder_out_mask,
+                                         acoustic_embed, token_num)
+        decoder_out = decoder_out.log_softmax(dim=-1)
+
+        return decoder_out
+
+def make_non_pad_mask(lengths: torch.Tensor, max_len: int = 0) -> torch.Tensor:
+    """Make mask tensor containing indices of padded part.
+
+    See description of make_non_pad_mask.
+
+    Args:
+        lengths (torch.Tensor): Batch of lengths (B,).
+    Returns:
+        torch.Tensor: Mask tensor containing indices of padded part.
+
+    Examples:
+        >>> lengths = [5, 3, 2]
+        >>> make_pad_mask(lengths)
+        masks = [[0, 0, 0, 0 ,0],
+                 [0, 0, 0, 1, 1],
+                 [0, 0, 1, 1, 1]]
+    """
+    batch_size = lengths.size(0)
+    max_len = max_len if max_len > 0 else lengths.max().item()
+    seq_range = torch.arange(0,
+                             max_len,
+                             dtype=torch.int64,
+                             device=lengths.device)
+    seq_range_expand = seq_range.unsqueeze(0).expand(batch_size, max_len)
+    seq_length_expand = lengths.unsqueeze(-1)
+    mask = seq_range_expand >= seq_length_expand
+    return ~mask
