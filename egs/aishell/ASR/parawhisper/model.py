@@ -126,8 +126,9 @@ class ParaWhisper(torch.nn.Module):
         #ys_pad_embed = self.embed(ys_pad)  # [B, T, L]
         ys_pad = ys_pad.to(encoder_out.device)
         tgt_mask = tgt_mask.to(encoder_out.device)
+        prev_outputs_tokens = prev_outputs_tokens.to(encoder_out.device)
         # ys_pad_embed = self.whisper_model.decoder.token_embedding(ys_pad)  # ??? why not ys_pad_in
-        ys_pad_embed = self.whisper_model.decoder.embed(prev_outputs_tokens)
+        ys_pad_embed = self.whisper_model.decoder.token_embedding(prev_outputs_tokens)
         with torch.no_grad():
             # decoder_out, _, _ = self.decoder(encoder_out, encoder_out_mask,
             #                                  pre_acoustic_embeds, ys_pad_lens)
