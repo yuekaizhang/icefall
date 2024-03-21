@@ -107,7 +107,7 @@ class ParaWhisper(torch.nn.Module):
             target_tokens = target_tokens[:, ignore_prefix_size:]
             loss_decoder = self.decoder_criterion(text_logits, target_tokens.to(text_logits.device))
 
-            loss = loss_decoder + 20 * loss_quantity
+            loss = loss_decoder + 100 * loss_quantity
         assert loss.requires_grad == is_training
 
         return (loss, loss_decoder, loss_quantity)
@@ -163,7 +163,16 @@ class ParaWhisper(torch.nn.Module):
         speech: torch.Tensor,
         speech_lengths: torch.Tensor,
     ) -> Dict[str, torch.Tensor]:
-        # encoder
+        def remove_non_chinese(text):
+            # Define a pattern for matching Chinese characters
+            # This pattern matches characters in the range of Unicode Chinese characters
+            pattern = re.compile(r'[^\u4e00-\u9fff]+')
+            
+            # Replace all non-Chinese characters with an empty string
+            filtered_text = pattern.sub('', text)
+            
+            return filtered_text
+            # encoder
         encoder_out = self.whisper_model.encoder(speech)
         encoder_out_len = speech_lengths // 2
         encoder_out_mask = make_non_pad_mask(encoder_out_len, encoder_out.shape[1]).unsqueeze(1)  # (B, 1, T)
@@ -184,9 +193,14 @@ class ParaWhisper(torch.nn.Module):
         pred = decoder_out.argmax(dim=-1)
         pred = pred.tolist()
         hyps = []
-        for i, pred_tokens in enumerate(pred):
+        for i, tokens in enumerate(pred):
+            # keep tokens until first 50257 sos token
+            if 50257 in tokens and tokens.index(50257) > 4:
+                pred_tokens = pred_tokens[: tokens.index(20257)]
             hyp = self.tokenizer.decode(pred_tokens)
+            print(hyp, pred_tokens, acoustic_embd.shape, token_num)
             s = re.sub(r'<\|.*?\|>', '', hyp)
+            s = remove_non_chinese(s)
             hyps.append(s)
         return hyps
 
