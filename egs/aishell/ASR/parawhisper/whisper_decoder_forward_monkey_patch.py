@@ -3,8 +3,8 @@ import torch.nn.functional as F
 import whisper
 from torch import Tensor
 from torch import nn
-from typing import Optional
-
+from typing import Dict, Iterable, Optional
+from whisper.model import ResidualAttentionBlock, LayerNorm
 class TextDecoder(nn.Module):
     def __init__(
         self, n_vocab: int, n_ctx: int, n_state: int, n_head: int, n_layer: int
