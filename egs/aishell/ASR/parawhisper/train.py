@@ -470,12 +470,25 @@ def compute_loss(
     texts = [text.replace(" ", "") for text in texts]
 
 
+    # text_tokens_list = [
+    #     list(tokenizer.sot_sequence_including_notimestamps)[1:]
+    #     + tokenizer.encode(text)
+    #     + [tokenizer.eot]
+    #     for text in texts
+    # ]
     text_tokens_list = [
-        list(tokenizer.sot_sequence_including_notimestamps)[1:]
-        + tokenizer.encode(text)
+        tokenizer.encode(text)
         + [tokenizer.eot]
         for text in texts
     ]
+
+    prev_outputs_tokens_list = [[tokenizer.sot] + text_tokens[:-1] for text_tokens in text_tokens_list]
+    prev_outputs_tokens_list = [
+        torch.LongTensor(text_tokens) for text_tokens in prev_outputs_tokens_list
+    ]
+    prev_outputs_tokens = _batch_tensors(
+        [tokens for tokens in prev_outputs_tokens_list], pad_value=50256
+    )
     # convert it to torch tensor
     text_tokens_list = [
         torch.LongTensor(text_tokens) for text_tokens in text_tokens_list
@@ -489,7 +502,7 @@ def compute_loss(
         [tokens for tokens in text_tokens_list], pad_value=50256
     )
 
-    loss, loss_decoder, loss_quantity = model(feature, feature_lens, target_tokens, target_lengths, is_training)
+    loss, loss_decoder, loss_quantity = model(feature, feature_lens, prev_outputs_tokens, target_tokens, target_lengths, is_training)
 
     info = MetricsTracker()
     with warnings.catch_warnings():

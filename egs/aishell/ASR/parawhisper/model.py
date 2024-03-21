@@ -68,6 +68,7 @@ class ParaWhisper(torch.nn.Module):
         self,
         feature: torch.Tensor,
         feature_len: torch.Tensor,
+        prev_outputs_tokens: torch.Tensor,
         target_tokens: torch.Tensor,
         target_lengths: torch.Tensor,
         is_training: bool,
@@ -88,6 +89,7 @@ class ParaWhisper(torch.nn.Module):
             # TODO(Mddct): support mwer here
             acoustic_embd = self._sampler(
                 encoder_out,
+                prev_outputs_tokens,
                 target_tokens,
                 target_lengths,
                 acoustic_embd,
@@ -103,8 +105,8 @@ class ParaWhisper(torch.nn.Module):
 
 
             text_logits = self.whisper_model.decoder(acoustic_embd, encoder_out)
-            text_logits = text_logits[:, ignore_prefix_size:, :]
-            target_tokens = target_tokens[:, ignore_prefix_size:]
+            # text_logits = text_logits[:, ignore_prefix_size:, :]
+            # target_tokens = target_tokens[:, ignore_prefix_size:]
             loss_decoder = self.decoder_criterion(text_logits, target_tokens.to(text_logits.device))
 
             loss = loss_decoder + 100 * loss_quantity
@@ -113,7 +115,7 @@ class ParaWhisper(torch.nn.Module):
         return (loss, loss_decoder, loss_quantity)
 
     @torch.jit.ignore(drop=True)
-    def _sampler(self, encoder_out, ys_pad, ys_pad_lens,
+    def _sampler(self, encoder_out, prev_outputs_tokens, ys_pad, ys_pad_lens,
                  pre_acoustic_embeds):
         device = encoder_out.device
         B, _ = ys_pad.size()
@@ -124,7 +126,8 @@ class ParaWhisper(torch.nn.Module):
         #ys_pad_embed = self.embed(ys_pad)  # [B, T, L]
         ys_pad = ys_pad.to(encoder_out.device)
         tgt_mask = tgt_mask.to(encoder_out.device)
-        ys_pad_embed = self.whisper_model.decoder.token_embedding(ys_pad)
+        # ys_pad_embed = self.whisper_model.decoder.token_embedding(ys_pad)  # ??? why not ys_pad_in
+        ys_pad_embed = self.whisper_model.decoder.embed(prev_outputs_tokens)
         with torch.no_grad():
             # decoder_out, _, _ = self.decoder(encoder_out, encoder_out_mask,
             #                                  pre_acoustic_embeds, ys_pad_lens)
@@ -195,12 +198,15 @@ class ParaWhisper(torch.nn.Module):
         hyps = []
         for i, tokens in enumerate(pred):
             # keep tokens until first 50257 sos token
-            if 50257 in tokens and tokens.index(50257) > 4:
-                pred_tokens = pred_tokens[: tokens.index(20257)]
+            # if 50257 in tokens and tokens.index(50257) > 4:
+            #     pred_tokens = tokens[: tokens.index(50257)]
+            # else:
+            #     pred_tokens = tokens
+            pred_tokens = tokens
             hyp = self.tokenizer.decode(pred_tokens)
-            print(hyp, pred_tokens, acoustic_embd.shape, token_num)
+            print(hyp, pred_tokens, acoustic_embed.shape, token_num)
             s = re.sub(r'<\|.*?\|>', '', hyp)
-            s = remove_non_chinese(s)
+            # s = remove_non_chinese(s)
             hyps.append(s)
         return hyps
 
