@@ -173,6 +173,7 @@ class ParaWhisper(torch.nn.Module):
         self,
         speech: torch.Tensor,
         speech_lengths: torch.Tensor,
+        oracle_target_label_length: torch.Tensor=None,
     ) -> Dict[str, torch.Tensor]:
         def remove_non_chinese(text):
             # Define a pattern for matching Chinese characters
@@ -191,8 +192,10 @@ class ParaWhisper(torch.nn.Module):
         # cif predictor
         # convert encoder_out to torch.float32
         encoder_out = encoder_out.to(dtype=torch.float32)
+        if oracle_target_label_length:
+            oracle_target_label_length = oracle_target_label_length.to(encoder_out.device)
         acoustic_embed, token_num, _, _,= self.cif_predictor(
-            encoder_out, mask=encoder_out_mask)
+            encoder_out, mask=encoder_out_mask, target_label_length=oracle_target_label_length)
         token_num = token_num.floor().to(speech_lengths.dtype)
 
         # decoder
