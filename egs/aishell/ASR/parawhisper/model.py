@@ -37,36 +37,32 @@ class ParaWhisper(torch.nn.Module):
                  sampling_ratio: float = 0.75
                  ):
         super().__init__()
-        self.cif_predictor = Cif()
+        self.cif_predictor = Cif(whisper_model.decoder.n_state)
         self.whisper_model = whisper_model
+        self.tokenzier = CustomTokenizer(custom_token_path)
+        self.whisper_model.decoder.token_embedding = nn.Embedding(self.tokenizer.vocab_size, self.whisper_model.decoder.n_state)
+        
         self.decoder_criterion = LabelSmoothingLoss(
-            ignore_index=50256, label_smoothing=0.1, reduction="sum"
+            ignore_index=self.tokenizer.pad, label_smoothing=0.1, reduction="sum"
         )
-        tokenizer = whisper.tokenizer.get_tokenizer(
-            whisper_model.is_multilingual,
-            num_languages=whisper_model.num_languages,
-            language="zh",
-            task="transcribe",
-        )
-        if not sampler:
-            self.tokenizer = tokenizer
-        custom_dict, custom_index_set, suppress_index_list = load_new_tokens_dict_list(custom_token_path, tokenizer)
-        self.suppress_tokens_list = suppress_index_list
-        self.custom_dict = custom_dict
-        # self.sos = special_tokens['<sos>']
-        # self.eos = special_tokens['<eos>']
+        # self.decoder_criterion = LabelSmoothingLoss(
+        #     ignore_index=50256, label_smoothing=0.1, reduction="sum"
+        # )
+        # tokenizer = whisper.tokenizer.get_tokenizer(
+        #     whisper_model.is_multilingual,
+        #     num_languages=whisper_model.num_languages,
+        #     language="zh",
+        #     task="transcribe",
+        # )
+        # if not sampler:
+        #     self.tokenizer = tokenizer
+        # custom_dict, custom_index_set, suppress_index_list = load_new_tokens_dict_list(custom_token_path, tokenizer)
+        # self.suppress_tokens_list = suppress_index_list
+        # self.custom_dict = custom_dict
+
 
         self.sampler = sampler
         self.sampling_ratio = sampling_ratio
-        # if sampler:
-        #     self.embed = self.decoder.embed
-        # else:
-        #     del self.decoder.embed
-        # NOTE(Mddct): add eos in tail of labels for predictor
-        # eg:
-        #    gt:         你 好 we@@ net
-        #    labels:     你 好 we@@ net eos
-        # self.add_eos = add_eos
 
     @torch.jit.ignore(drop=True)
     def forward(
@@ -250,10 +246,10 @@ def make_non_pad_mask(lengths: torch.Tensor, max_len: int = 0) -> torch.Tensor:
     return ~mask
 
 
-def suppress_tokens(logits, suppress_tokens_list, suppress_value=None) -> None:
-    if suppress_value is None:
-        suppress_value = float('-inf')
-    else:
-        suppress_value = float(suppress_value)
-    logits[:, :, suppress_tokens_list] = suppress_value
-    return logits
+# def suppress_tokens(logits, suppress_tokens_list, suppress_value=None) -> None:
+#     if suppress_value is None:
+#         suppress_value = float('-inf')
+#     else:
+#         suppress_value = float(suppress_value)
+#     logits[:, :, suppress_tokens_list] = suppress_value
+#     return logits

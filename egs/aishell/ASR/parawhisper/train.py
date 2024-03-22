@@ -112,7 +112,7 @@ def get_parser():
     parser.add_argument(
         "--num-epochs",
         type=int,
-        default=20,
+        default=30,
         help="Number of epochs to train.",
     )
 
@@ -477,23 +477,23 @@ def compute_loss(
     #     + [tokenizer.eot]
     #     for text in texts
     # ]
+    text_tokens_list = [
+        model.tokenizer.encode(text)
+        + [model.tokenizer.eot]
+        for text in texts
+    ]
     # text_tokens_list = [
-    #     tokenizer.encode(text)
+    #     encode_with_dict(text, model.custom_dict)
     #     + [tokenizer.eot]
     #     for text in texts
     # ]
-    text_tokens_list = [
-        encode_with_dict(text, model.custom_dict)
-        + [tokenizer.eot]
-        for text in texts
-    ]
 
-    prev_outputs_tokens_list = [[tokenizer.sot] + text_tokens[:-1] for text_tokens in text_tokens_list]
+    prev_outputs_tokens_list = [[model.tokenizer.sot] + text_tokens[:-1] for text_tokens in text_tokens_list]
     prev_outputs_tokens_list = [
         torch.LongTensor(text_tokens) for text_tokens in prev_outputs_tokens_list
     ]
     prev_outputs_tokens = _batch_tensors(
-        [tokens for tokens in prev_outputs_tokens_list], pad_value=50256
+        [tokens for tokens in prev_outputs_tokens_list], pad_value=model.tokenizer.pad
     )
     # convert it to torch tensor
     text_tokens_list = [
@@ -505,7 +505,7 @@ def compute_loss(
     # )
     target_lengths = torch.LongTensor([len(tokens) for tokens in text_tokens_list])
     target_tokens = _batch_tensors(
-        [tokens for tokens in text_tokens_list], pad_value=50256
+        [tokens for tokens in text_tokens_list], pad_value=model.tokenizer.pad
     )
 
     loss, loss_decoder, loss_quantity = model(feature, feature_lens, prev_outputs_tokens, target_tokens, target_lengths, is_training)
