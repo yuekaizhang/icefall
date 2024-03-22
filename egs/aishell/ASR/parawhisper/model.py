@@ -21,6 +21,7 @@ import whisper
 import torch
 from cif import Cif
 from label_smoothing import LabelSmoothingLoss
+from whisper_tokens import load_new_tokens_dict_list
 
 class ParaWhisper(torch.nn.Module):
     """ Paraformer: Fast and Accurate Parallel Transformer for
@@ -31,6 +32,7 @@ class ParaWhisper(torch.nn.Module):
 
     def __init__(self,
                  whisper_model,
+                 custom_token_path: str,
                  sampler: bool = True,
                  sampling_ratio: float = 0.75
                  ):
@@ -40,14 +42,17 @@ class ParaWhisper(torch.nn.Module):
         self.decoder_criterion = LabelSmoothingLoss(
             ignore_index=50256, label_smoothing=0.1, reduction="sum"
         )
+        tokenizer = whisper.tokenizer.get_tokenizer(
+            whisper_model.is_multilingual,
+            num_languages=whisper_model.num_languages,
+            language="zh",
+            task="transcribe",
+        )
         if not sampler:
-            self.tokenizer = whisper.tokenizer.get_tokenizer(
-                whisper_model.is_multilingual,
-                num_languages=whisper_model.num_languages,
-                language="zh",
-                task="transcribe",
-            )
-        # assert special_tokens is not None
+            self.tokenizer = tokenizer
+        custom_dict, custom_index_set, suppress_index_list = load_new_tokens_dict_list(custom_token_path, tokenizer)
+        self.suppress_tokens_list = suppress_index_list
+        self.custom_dict = custom_dict
         # self.sos = special_tokens['<sos>']
         # self.eos = special_tokens['<eos>']
 
@@ -105,6 +110,7 @@ class ParaWhisper(torch.nn.Module):
 
 
             text_logits = self.whisper_model.decoder(acoustic_embd, encoder_out)
+            text_logits = suppress_tokens(text_logits, self.suppress_tokens_list)
             # text_logits = text_logits[:, ignore_prefix_size:, :]
             # target_tokens = target_tokens[:, ignore_prefix_size:]
             loss_decoder = self.decoder_criterion(text_logits, target_tokens.to(text_logits.device))
@@ -133,6 +139,7 @@ class ParaWhisper(torch.nn.Module):
             # decoder_out, _, _ = self.decoder(encoder_out, encoder_out_mask,
             #                                  pre_acoustic_embeds, ys_pad_lens)
             decoder_out = self.whisper_model.decoder(pre_acoustic_embeds, encoder_out)
+            decoder_out = suppress_tokens(decoder_out, self.suppress_tokens_list)
             pred_tokens = decoder_out.argmax(-1)
 
             nonpad_positions = tgt_mask
@@ -194,6 +201,8 @@ class ParaWhisper(torch.nn.Module):
         decoder_out = self.whisper_model.decoder(acoustic_embed, encoder_out)
         # decoder_out = decoder_out.log_softmax(dim=-1)
 
+        decoder_out = suppress_tokens(decoder_out, self.suppress_tokens_list)
+
         pred = decoder_out.argmax(dim=-1)
         pred = pred.tolist()
         hyps = []
@@ -238,3 +247,7 @@ def make_non_pad_mask(lengths: torch.Tensor, max_len: int = 0) -> torch.Tensor:
     seq_length_expand = lengths.unsqueeze(-1)
     mask = seq_range_expand >= seq_length_expand
     return ~mask
+
+
+def suppress_tokens(logits, suppress_tokens_list) -> None:
+    logits[:, :, suppress_tokens_list] = float('-inf')

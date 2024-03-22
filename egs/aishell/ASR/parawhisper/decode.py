@@ -228,6 +228,13 @@ def get_parser():
         help="replace whisper encoder forward method to remove input length restriction",
     )
 
+    parser.add_argument(
+        "--custom-token-path",
+        type=str,
+        default="parawhisper/aishell_tokens_whisper.txt",
+        help="The path to the custom dict.",
+    )
+
     return parser
 
 
@@ -436,7 +443,7 @@ def main():
     replace_whisper_encoder_forward()
     replace_whisper_decoder_forward()
     model = whisper.load_model(params.model_name, "cpu")
-    model = ParaWhisper(model, sampler=False)
+    model = ParaWhisper(model, params.custom_token_path, sampler=False)
     if params.epoch > 0:
         if params.avg > 1:
             start = params.epoch - params.avg

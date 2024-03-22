@@ -83,6 +83,7 @@ from icefall.utils import (
     setup_logger,
     str2bool,
 )
+from whisper_tokens import load_new_tokens_dict_list, encode_with_dict
 
 LRSchedulerType = Union[torch.optim.lr_scheduler._LRScheduler, optim.LRScheduler]
 
@@ -111,7 +112,7 @@ def get_parser():
     parser.add_argument(
         "--num-epochs",
         type=int,
-        default=30,
+        default=20,
         help="Number of epochs to train.",
     )
 
@@ -226,10 +227,10 @@ def get_parser():
     )
 
     parser.add_argument(
-        "--substituated-dict-path",
+        "--custom-token-path",
         type=str,
-        default="whisper/aishell_tokens.txt",
-        help="The path to the substituated dict.",
+        default="parawhisper/aishell_tokens_whisper.txt",
+        help="The path to the custom dict.",
     )
 
     parser.add_argument(
@@ -476,8 +477,13 @@ def compute_loss(
     #     + [tokenizer.eot]
     #     for text in texts
     # ]
+    # text_tokens_list = [
+    #     tokenizer.encode(text)
+    #     + [tokenizer.eot]
+    #     for text in texts
+    # ]
     text_tokens_list = [
-        tokenizer.encode(text)
+        encode_with_dict(text, model.custom_dict)
         + [tokenizer.eot]
         for text in texts
     ]
@@ -743,8 +749,6 @@ def run(rank, world_size, args):
     """
     params = get_params()
     params.update(vars(args))
-    # if params.enable_nar_training:
-    #     params.substituated_dict = load_chinese_chars(params.substituated_dict_path)
 
     fix_random_seed(params.seed)
 
@@ -765,7 +769,7 @@ def run(rank, world_size, args):
         task="transcribe",
     )
 
-    model = ParaWhisper(model)
+    model = ParaWhisper(model, params.custom_token_path)
 
     num_param = sum([p.numel() for p in model.parameters()])
     logging.info(f"Number of model parameters: {num_param}")
