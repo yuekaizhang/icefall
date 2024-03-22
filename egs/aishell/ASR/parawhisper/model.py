@@ -192,7 +192,7 @@ class ParaWhisper(torch.nn.Module):
         # cif predictor
         # convert encoder_out to torch.float32
         encoder_out = encoder_out.to(dtype=torch.float32)
-        if oracle_target_label_length:
+        if oracle_target_label_length is not None:
             oracle_target_label_length = oracle_target_label_length.to(encoder_out.device)
         acoustic_embed, token_num, _, _,= self.cif_predictor(
             encoder_out, mask=encoder_out_mask, target_label_length=oracle_target_label_length)
@@ -202,9 +202,7 @@ class ParaWhisper(torch.nn.Module):
         # decoder_out = self.whisper_model.decoder(encoder_out, encoder_out_mask,
         #                                  acoustic_embed, token_num)
         decoder_out = self.whisper_model.decoder(acoustic_embed, encoder_out)
-        # decoder_out = decoder_out.log_softmax(dim=-1)
-
-        decoder_out = suppress_tokens(decoder_out, self.suppress_tokens_list)
+        # decoder_out = suppress_tokens(decoder_out, self.suppress_tokens_list)
 
         pred = decoder_out.argmax(dim=-1)
         pred = pred.tolist()

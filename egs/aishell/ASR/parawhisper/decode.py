@@ -290,14 +290,14 @@ def decode_one_batch(
     feature_len = supervisions["num_frames"]
     feature_len = feature_len.to(device, dtype=dtype)
     
-    use_oracle_num_token = True
+    use_oracle_num_token = False
     if use_oracle_num_token:
         texts = batch["supervisions"]["text"]
         # remove spaces in texts
         texts = [text.replace(" ", "") for text in texts]
         text_tokens_list = [
             model.tokenizer.encode(text)
-            + [tokenizer.eot]
+            + [model.tokenizer.eot]
             for text in texts
         ]
         text_tokens_list = [
