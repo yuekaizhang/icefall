@@ -22,6 +22,7 @@ import torch
 from cif import Cif
 from label_smoothing import LabelSmoothingLoss
 from whisper_tokens import load_new_tokens_dict_list
+from custom_tokens import CustomTokenizer
 
 class ParaWhisper(torch.nn.Module):
     """ Paraformer: Fast and Accurate Parallel Transformer for
@@ -37,10 +38,10 @@ class ParaWhisper(torch.nn.Module):
                  sampling_ratio: float = 0.75
                  ):
         super().__init__()
-        self.cif_predictor = Cif(whisper_model.decoder.n_state)
+        self.cif_predictor = Cif(whisper_model.dims.n_audio_state)
         self.whisper_model = whisper_model
-        self.tokenzier = CustomTokenizer(custom_token_path)
-        self.whisper_model.decoder.token_embedding = nn.Embedding(self.tokenizer.vocab_size, self.whisper_model.decoder.n_state)
+        self.tokenizer = CustomTokenizer(custom_token_path)
+        self.whisper_model.decoder.token_embedding = nn.Embedding(self.whisper_model.dims.n_vocab, self.whisper_model.dims.n_text_state)
         
         self.decoder_criterion = LabelSmoothingLoss(
             ignore_index=self.tokenizer.pad, label_smoothing=0.1, reduction="sum"

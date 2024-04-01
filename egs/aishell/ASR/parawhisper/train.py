@@ -229,7 +229,7 @@ def get_parser():
     parser.add_argument(
         "--custom-token-path",
         type=str,
-        default="parawhisper/aishell_tokens_whisper.txt",
+        default="parawhisper/aishell_tokens_wenet.txt",
         help="The path to the custom dict.",
     )
 
