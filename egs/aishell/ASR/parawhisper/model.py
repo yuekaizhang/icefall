@@ -41,7 +41,7 @@ class ParaWhisper(torch.nn.Module):
         self.cif_predictor = Cif(whisper_model.dims.n_audio_state)
         self.whisper_model = whisper_model
         self.tokenizer = CustomTokenizer(custom_token_path)
-        self.whisper_model.decoder.token_embedding = nn.Embedding(self.whisper_model.dims.n_vocab, self.whisper_model.dims.n_text_state)
+        self.whisper_model.decoder.token_embedding = torch.nn.Embedding(self.whisper_model.dims.n_vocab, self.whisper_model.dims.n_text_state)
         
         self.decoder_criterion = LabelSmoothingLoss(
             ignore_index=self.tokenizer.pad, label_smoothing=0.1, reduction="sum"
