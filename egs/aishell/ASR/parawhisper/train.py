@@ -240,6 +240,13 @@ def get_parser():
         help="Should NAR training enabled or not",
     )
 
+    parser.add_argument(
+        "--ctc-only",
+        type=str2bool,
+        default=True,
+        help="Whether to use CTC only.",
+    )
+
     parser = deepspeed.add_config_arguments(parser)
 
     return parser
@@ -477,9 +484,14 @@ def compute_loss(
     #     + [tokenizer.eot]
     #     for text in texts
     # ]
+    # text_tokens_list = [
+    #     model.tokenizer.encode(text)
+    #     + [model.tokenizer.eot]
+    #     for text in texts
+    # ]
     text_tokens_list = [
-        model.tokenizer.encode(text)
-        + [model.tokenizer.eot]
+        tokenizer.encode(text)
+        + [tokenizer.eot]
         for text in texts
     ]
     # text_tokens_list = [
@@ -488,12 +500,16 @@ def compute_loss(
     #     for text in texts
     # ]
 
-    prev_outputs_tokens_list = [[model.tokenizer.sot] + text_tokens[:-1] for text_tokens in text_tokens_list]
+    # prev_outputs_tokens_list = [[model.tokenizer.sot] + text_tokens[:-1] for text_tokens in text_tokens_list]
+    prev_outputs_tokens_list = [[tokenizer.sot] + text_tokens[:-1] for text_tokens in text_tokens_list]    
     prev_outputs_tokens_list = [
         torch.LongTensor(text_tokens) for text_tokens in prev_outputs_tokens_list
     ]
+    # prev_outputs_tokens = _batch_tensors(
+    #     [tokens for tokens in prev_outputs_tokens_list], pad_value=model.tokenizer.pad
+    # )
     prev_outputs_tokens = _batch_tensors(
-        [tokens for tokens in prev_outputs_tokens_list], pad_value=model.tokenizer.pad
+        [tokens for tokens in prev_outputs_tokens_list], pad_value=50256
     )
     # convert it to torch tensor
     text_tokens_list = [
@@ -504,11 +520,16 @@ def compute_loss(
     #     [tokens[:-1] for tokens in text_tokens_list], pad_value=50256
     # )
     target_lengths = torch.LongTensor([len(tokens) for tokens in text_tokens_list])
+    # target_tokens = _batch_tensors(
+    #     [tokens for tokens in text_tokens_list], pad_value=model.tokenizer.pad
+    # )
     target_tokens = _batch_tensors(
-        [tokens for tokens in text_tokens_list], pad_value=model.tokenizer.pad
+        [tokens for tokens in text_tokens_list], pad_value=50256
     )
-
-    loss, loss_decoder, loss_quantity = model(feature, feature_lens, prev_outputs_tokens, target_tokens, target_lengths, is_training)
+    if not params.ctc_only:
+        loss, loss_decoder, loss_quantity = model(feature, feature_lens, prev_outputs_tokens, target_tokens, target_lengths, is_training)
+    else:
+        loss, loss_decoder, loss_quantity = model.forward_ctc_only(feature, feature_lens, prev_outputs_tokens, target_tokens, target_lengths, is_training)
 
     info = MetricsTracker()
     with warnings.catch_warnings():

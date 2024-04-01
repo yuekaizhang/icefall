@@ -235,6 +235,13 @@ def get_parser():
         help="The path to the custom dict.",
     )
 
+    parser.add_argument(
+        "--ctc-only",
+        type=str2bool,
+        default=True,
+        help="Whether to use CTC only.",
+    )
+
     return parser
 
 
@@ -306,8 +313,11 @@ def decode_one_batch(
         target_lengths = torch.LongTensor([len(tokens) for tokens in text_tokens_list])
     else:
         target_lengths = None
-
-    hyps = model.decode(feature, feature_len, target_lengths)
+    
+    if not params.ctc_only:
+        hyps = model.decode(feature, feature_len, target_lengths)
+    else:
+        hyps = model.ctc_decode(feature, feature_len)
 
     # hyps = [result.text for result in results]
 
