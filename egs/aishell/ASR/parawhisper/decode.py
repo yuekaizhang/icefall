@@ -296,28 +296,31 @@ def decode_one_batch(
     supervisions = batch["supervisions"]
     feature_len = supervisions["num_frames"]
     feature_len = feature_len.to(device, dtype=dtype)
-    
+
+
+    texts = batch["supervisions"]["text"]
+    # remove spaces in texts
+    texts = [text.replace(" ", "") for text in texts]
+    text_tokens_list = [
+        model.tokenizer.encode(text)
+        + [model.tokenizer.eot]
+        for text in texts
+    ]
     use_oracle_num_token = False
     if use_oracle_num_token:
-        texts = batch["supervisions"]["text"]
-        # remove spaces in texts
-        texts = [text.replace(" ", "") for text in texts]
-        text_tokens_list = [
-            model.tokenizer.encode(text)
-            + [model.tokenizer.eot]
-            for text in texts
-        ]
-        text_tokens_list = [
+        text_tokens_tensor = [
             torch.LongTensor(text_tokens) for text_tokens in text_tokens_list
         ]
-        target_lengths = torch.LongTensor([len(tokens) for tokens in text_tokens_list])
+        target_lengths = torch.LongTensor([len(tokens) for tokens in text_tokens_tensor])
     else:
         target_lengths = None
     
     if not params.ctc_only:
-        hyps = model.decode(feature, feature_len, target_lengths)
+        hyps, pred_tokens = model.decode(feature, feature_len, target_lengths)
+        # remove all 50257 in the pred_tokens
+        pred_tokens = [list(filter(lambda x: x != 50257, tokens)) for tokens in pred_tokens]
     else:
-        hyps = model.ctc_decode(feature, feature_len)
+        hyps, pred_tokens = model.ctc_decode(feature, feature_len)
 
     # hyps = [result.text for result in results]
 
@@ -325,7 +328,7 @@ def decode_one_batch(
     hyps = to_simple(hyps)
     hyps = [params.normalizer.normalize(hyp) for hyp in hyps]
     print(hyps)
-    return {"beam-search": hyps}
+    return {"beam-search": hyps}, pred_tokens, text_tokens_list
 
 
 def decode_dataset(
@@ -356,15 +359,20 @@ def decode_dataset(
         num_batches = "?"
 
     results = defaultdict(list)
+    all_preds, all_labels, all_cut_ids = [], [], []
     for batch_idx, batch in enumerate(dl):
         texts = batch["supervisions"]["text"]
         cut_ids = [cut.id for cut in batch["supervisions"]["cut"]]
 
-        hyps_dict = decode_one_batch(
+        hyps_dict, pred_tokens, label_tokens = decode_one_batch(
             params=params,
             model=model,
             batch=batch,
         )
+        all_preds.extend(pred_tokens)
+        for label_token in label_tokens:
+            all_labels.append(label_token[:-1])
+        all_cut_ids.extend(cut_ids)
 
         for lm_scale, hyps in hyps_dict.items():
             this_batch = []
@@ -381,7 +389,7 @@ def decode_dataset(
             batch_str = f"{batch_idx}/{num_batches}"
 
             logging.info(f"batch {batch_str}, cuts processed until now is {num_cuts}")
-    return results
+    return results, all_preds, all_labels, all_cut_ids
 
 
 def save_results(
@@ -396,7 +404,7 @@ def save_results(
         recog_path = (
             params.exp_dir / f"recogs-{test_set_name}-{key}-{params.suffix}.txt"
         )
-        results = sorted(results)
+        # results = sorted(results)
         store_transcripts(filename=recog_path, texts=results)
         if enable_log:
             logging.info(f"The transcripts are stored in {recog_path}")
@@ -432,6 +440,58 @@ def save_results(
         s += "{}\t{}{}\n".format(key, val, note)
         note = ""
     logging.info(s)
+
+def save_token_results(
+    params: AttributeDict,
+    test_set_name: str,
+    all_preds: List[List[int]],
+    all_labels: List[List[int]],
+    all_cut_ids: List[str],
+):
+    enable_log = True
+    test_set_wers = dict()
+    results_char = []
+    for cut_id, pred, label in zip(all_cut_ids, all_preds, all_labels):
+        # convert from int to str
+        pred = [str(p) for p in pred]
+        label = [str(l) for l in label]
+        results_char.append((cut_id, label, pred))
+    errs_filename = (
+        params.exp_dir / f"errs-{test_set_name}-token-{params.suffix}.txt"
+    )
+    with open(errs_filename, "w") as f:
+        wer = write_error_stats(
+            f, f"{test_set_name}-token", results_char, enable_log=enable_log
+        )
+        test_set_wers["token"] = wer
+
+    if enable_log:
+        logging.info("Wrote detailed error stats to {}".format(errs_filename))
+
+    test_set_wers = sorted(test_set_wers.items(), key=lambda x: x[1])
+    errs_info = params.exp_dir / f"cer-summary-{test_set_name}-token-{params.suffix}.txt"
+    # calculate the sentence level token num accuracy
+    # e.g. len(pred) = 10, len(label) = 10, then the total_sentence_num += 1
+    total_sentence_num = 0
+    for pred, label in zip(all_preds, all_labels):
+        if len(pred) == len(label):
+            total_sentence_num += 1
+    sentence_accuracy = total_sentence_num / len(all_preds)
+    logging.info(f"Total sentence num: {len(all_preds)}, sentence accuracy: {sentence_accuracy}")
+
+    with open(errs_info, "w") as f:
+        print("settings\tCER", file=f)
+        for key, val in test_set_wers:
+            print("{}\t{}".format(key, val), file=f)
+        print(f"Total sentence num: {len(all_preds)}, sentence accuracy: {sentence_accuracy}", file=f)
+
+    s = "\nFor {}, CER of different settings are:\n".format(test_set_name)
+    note = "\tbest for {}".format(test_set_name)
+    for key, val in test_set_wers:
+        s += "{}\t{}{}\n".format(key, val, note)
+        note = ""
+    logging.info(s)
+
 
 
 @torch.no_grad()
@@ -528,13 +588,13 @@ def main():
     test_dls = [test_dl]
 
     for test_set, test_dl in zip(test_sets, test_dls):
-        results_dict = decode_dataset(
+        results_dict, all_preds, all_labels, all_cut_ids = decode_dataset(
             dl=test_dl,
             params=params,
             model=model,
         )
-
         save_results(params=params, test_set_name=test_set, results_dict=results_dict)
+        save_token_results(params=params, test_set_name=test_set, all_preds=all_preds, all_labels=all_labels, all_cut_ids=all_cut_ids)
 
     logging.info("Done!")
 

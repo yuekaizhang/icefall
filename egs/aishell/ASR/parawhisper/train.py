@@ -247,6 +247,15 @@ def get_parser():
         help="Whether to use CTC only.",
     )
 
+    parser.add_argument(
+        "--pretrained-model-path",
+        type=str,
+        default=None,
+        help="""The path to the pretrained model if it is not None. Training will
+        start from this model. e.g. ./wenetspeech/ASR/whisper/exp_large_v2/epoch-4-avg-3.pt
+        """,
+    )
+
     parser = deepspeed.add_config_arguments(parser)
 
     return parser
@@ -792,6 +801,30 @@ def run(rank, world_size, args):
 
     model = ParaWhisper(model, params.custom_token_path)
 
+    # check the exp_dir, list the epoch-xxx.pt files and start from the last one plus 1
+    if params.start_epoch == 1:
+        largest_epoch = 0
+        for f in os.listdir(params.exp_dir):
+            if f.startswith("epoch-") and f.endswith(".pt"):
+                epoch = int(f.split("-")[1].split(".")[0])
+                if epoch < params.num_epochs:
+                    largest_epoch = max(largest_epoch, epoch)
+        params.start_epoch = largest_epoch + 1
+
+    filename = None
+    if params.pretrained_model_path:
+        filename = params.pretrained_model_path
+    # priority: start_epoch > pretrained_model_path
+    if params.start_epoch > 1:
+        filename = params.exp_dir / f"epoch-{params.start_epoch-1}.pt"
+    if filename:
+        logging.info(f"Loading model from {filename}")
+        checkpoint = torch.load(filename, map_location="cpu")
+        if "model" not in checkpoint:
+            model.load_state_dict(checkpoint, strict=True)
+        else:
+            load_checkpoint(filename, model)
+
     num_param = sum([p.numel() for p in model.parameters()])
     logging.info(f"Number of model parameters: {num_param}")
 
@@ -802,9 +835,10 @@ def run(rank, world_size, args):
         model_avg = copy.deepcopy(model).to(torch.float64)
 
     assert params.start_epoch > 0, params.start_epoch
-    checkpoints = load_checkpoint_if_available(
-        params=params, model=model, model_avg=model_avg
-    )
+    # checkpoints = load_checkpoint_if_available(
+    #     params=params, model=model, model_avg=model_avg
+    # )
+    checkpoints = None
 
     if torch.cuda.is_available():
         device = torch.device("cuda", rank)

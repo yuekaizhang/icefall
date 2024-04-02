@@ -235,11 +235,9 @@ class ParaWhisper(torch.nn.Module):
             encoder_out, mask=encoder_out_mask)
         token_num = token_num.floor().to(speech_lengths.dtype)
 
-        # decoder
-        # decoder_out = self.whisper_model.decoder(encoder_out, encoder_out_mask,
-        #                                  acoustic_embed, token_num)
+
         decoder_out = self.whisper_model.decoder(acoustic_embed, encoder_out)
-        # decoder_out = suppress_tokens(decoder_out, self.suppress_tokens_list)
+
 
         pred = decoder_out.argmax(dim=-1)
         pred = pred.tolist()
@@ -256,19 +254,21 @@ class ParaWhisper(torch.nn.Module):
             s = re.sub(r'<\|.*?\|>', '', hyp)
             # s = remove_non_chinese(s)
             hyps.append(s)
-        return hyps
+        return hyps, pred
     
     def ctc_decode(self, speech: torch.Tensor, speech_lengths: torch.Tensor) -> Dict[str, torch.Tensor]:
         encoder_out = self.whisper_model.encoder(speech)
         encoder_out_len = speech_lengths // 2
         encoder_out_len = encoder_out_len.to(encoder_out.device)
-        pred_tokens = ctc_greedy_search(encoder_out, encoder_out_len, blank_id=50256, eot_id=self.tokenizer.eot)
+        encoder_out = encoder_out.to(dtype=torch.float32)
+        ctc_probs = self.ctc.log_softmax(encoder_out)
+        pred_tokens = ctc_greedy_search(ctc_probs, encoder_out_len, blank_id=50256, eot_id=self.tokenizer.eot)
         hyps = []
         for tokens in pred_tokens:
             hyp = self.tokenizer.decode(tokens)
             print(hyp, tokens)
             hyps.append(hyp)
-        return hyps
+        return hyps, pred_tokens
    
 
 def make_non_pad_mask(lengths: torch.Tensor, max_len: int = 0) -> torch.Tensor:
