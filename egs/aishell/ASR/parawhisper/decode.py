@@ -569,7 +569,7 @@ def main():
                 f"{params.exp_dir}/epoch-{params.epoch}.pt", map_location="cpu"
             )
             if "model" not in checkpoint:
-                model.load_state_dict(checkpoint, strict=True)
+                model.load_state_dict(checkpoint, strict=False)
             else:
                 load_checkpoint(f"{params.exp_dir}/epoch-{params.epoch}.pt", model)
     model.to(device)

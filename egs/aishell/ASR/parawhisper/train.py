@@ -535,8 +535,12 @@ def compute_loss(
     target_tokens = _batch_tensors(
         [tokens for tokens in text_tokens_list], pad_value=50256
     )
+    second_stage = True
     if not params.ctc_only:
-        loss, loss_decoder, loss_quantity = model(feature, feature_lens, prev_outputs_tokens, target_tokens, target_lengths, is_training)
+        if second_stage:
+            loss, loss_decoder, loss_quantity = model.forward_no_oracle_target_len_sampler(feature, feature_lens, prev_outputs_tokens, target_tokens, target_lengths, is_training)
+        else:
+            loss, loss_decoder, loss_quantity = model(feature, feature_lens, prev_outputs_tokens, target_tokens, target_lengths, is_training)
     else:
         loss, loss_decoder, loss_quantity = model.forward_ctc_only(feature, feature_lens, prev_outputs_tokens, target_tokens, target_lengths, is_training)
 
@@ -821,7 +825,7 @@ def run(rank, world_size, args):
         logging.info(f"Loading model from {filename}")
         checkpoint = torch.load(filename, map_location="cpu")
         if "model" not in checkpoint:
-            model.load_state_dict(checkpoint, strict=True)
+            model.load_state_dict(checkpoint, strict=False)
         else:
             load_checkpoint(filename, model)
 

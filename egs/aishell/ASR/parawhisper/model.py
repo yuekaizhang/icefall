@@ -126,6 +126,67 @@ class ParaWhisper(torch.nn.Module):
 
         return (loss, loss_decoder, loss_quantity)
 
+    def forward_no_oracle_target_len_sampler(
+        self,
+        feature: torch.Tensor,
+        feature_len: torch.Tensor,
+        prev_outputs_tokens: torch.Tensor,
+        target_tokens: torch.Tensor,
+        target_lengths: torch.Tensor,
+        is_training: bool,
+    ):
+        """Frontend + Encoder + Predictor + Decoder + Calc loss
+        """
+        # ignore the first 3 tokens, which are always <|lang_id|>, <|transcibe|>, <|notimestampes|>
+        ignore_prefix_size = 3
+        with torch.set_grad_enabled(is_training):
+            encoder_out = self.whisper_model.encoder(feature)
+            # encoder_out_mask is feature_len // 2
+            encoder_out_len = feature_len // 2
+            encoder_out_mask = make_non_pad_mask(encoder_out_len, encoder_out.shape[1]).unsqueeze(1)  # (B, 1, T)
+            # acoustic_embd, token_num, _, _ = self.cif_predictor(
+            #     encoder_out, mask=encoder_out_mask, target_label_length=target_lengths.to(encoder_out.device))
+            acoustic_embd, token_num, _, _ = self.cif_predictor(
+                encoder_out, mask=encoder_out_mask)
+
+            # 2 decoder with sampler
+            # TODO(Mddct): support mwer here
+            # make sure acoustic_embd and target_tokens are with the same sequence length, append 50256 to target_tokens if needed
+            # first append acoustic_embd with extra frames
+            extra_frames = int(acoustic_embd.shape[1]*0.3)
+            acoustic_embd_extra = torch.cat([acoustic_embd, torch.zeros(acoustic_embd.shape[0], extra_frames, acoustic_embd.shape[2], device=acoustic_embd.device)], dim=1)
+            # then append target_tokens with 50256
+            extra_target_frames = acoustic_embd_extra.shape[1] - target_tokens.shape[1]
+            target_tokens_extra = torch.cat([target_tokens, torch.ones(target_tokens.shape[0], extra_target_frames, dtype=target_tokens.dtype, device=target_tokens.device)*50256], dim=1)
+            # acoustic_embd = self._sampler(
+            #     encoder_out,
+            #     prev_outputs_tokens,
+            #     target_tokens,
+            #     target_lengths,
+            #     acoustic_embd,
+            # )
+
+            target_lengths = target_lengths.to(encoder_out.device)
+            loss_quantity = torch.nn.functional.l1_loss(
+                token_num,
+                target_lengths.to(token_num.dtype),
+                reduction='sum',
+            )
+            # print("token_num", token_num, "target_lengths", target_lengths)
+            loss_quantity = loss_quantity / target_lengths.sum().to(token_num.dtype)
+
+
+            text_logits = self.whisper_model.decoder(acoustic_embd_extra, encoder_out)
+            # text_logits = suppress_tokens(text_logits, self.suppress_tokens_list, -10000)
+            # text_logits = text_logits[:, ignore_prefix_size:, :]
+            # target_tokens = target_tokens[:, ignore_prefix_size:]
+            loss_decoder = self.decoder_criterion(text_logits, target_tokens_extra.to(text_logits.device))
+
+            loss = loss_decoder + 100 * loss_quantity
+        assert loss.requires_grad == is_training
+
+        return (loss, loss_decoder, loss_quantity)
+
     def forward_ctc_only(
         self,
         feature: torch.Tensor,
