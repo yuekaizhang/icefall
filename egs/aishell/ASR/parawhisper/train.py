@@ -538,7 +538,7 @@ def compute_loss(
     second_stage = False
     if not params.ctc_only:
         if second_stage:
-            loss, loss_decoder, loss_quantity = model.forward_no_sampler(feature, feature_lens, prev_outputs_tokens, target_tokens, target_lengths, is_training)
+            loss, loss_decoder, loss_quantity = model.forward_no_oracle_target_len(feature, feature_lens, prev_outputs_tokens, target_tokens, target_lengths, is_training)
         else:
             loss, loss_decoder, loss_quantity = model(feature, feature_lens, prev_outputs_tokens, target_tokens, target_lengths, is_training)
     else:

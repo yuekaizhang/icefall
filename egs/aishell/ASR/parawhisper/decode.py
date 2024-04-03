@@ -306,7 +306,7 @@ def decode_one_batch(
         + [model.tokenizer.eot]
         for text in texts
     ]
-    use_oracle_num_token = False
+    use_oracle_num_token = True
     if use_oracle_num_token:
         text_tokens_tensor = [
             torch.LongTensor(text_tokens) for text_tokens in text_tokens_list
@@ -316,6 +316,7 @@ def decode_one_batch(
         target_lengths = None
     
     if not params.ctc_only:
+        # hyps, pred_tokens = model.decode_cif_prior(feature, feature_len, target_lengths)
         hyps, pred_tokens = model.decode(feature, feature_len, target_lengths)
         # remove all 50257 in the pred_tokens
         pred_tokens = [list(filter(lambda x: x != 50257, tokens)) for tokens in pred_tokens]
@@ -473,11 +474,18 @@ def save_token_results(
     # calculate the sentence level token num accuracy
     # e.g. len(pred) = 10, len(label) = 10, then the total_sentence_num += 1
     total_sentence_num = 0
+    total_tolerance_num = 0
     for pred, label in zip(all_preds, all_labels):
+        if len(pred) - len(label) > 1 or len(label) - len(pred) > 1:
+            print(23333333333333333333333333333, len(pred), len(label))
+        elif len(pred) - len(label) == 1 or len(label) - len(pred) == 1:
+            total_tolerance_num += 1
         if len(pred) == len(label):
             total_sentence_num += 1
     sentence_accuracy = total_sentence_num / len(all_preds)
+    tolerance_sentence_accuracy = (total_sentence_num + total_tolerance_num) / len(all_preds)
     logging.info(f"Total sentence num: {len(all_preds)}, sentence accuracy: {sentence_accuracy}")
+    logging.info(f"Total sentence num: {len(all_preds)}, sentence accuracy with tolerance: {tolerance_sentence_accuracy}")
 
     with open(errs_info, "w") as f:
         print("settings\tCER", file=f)
