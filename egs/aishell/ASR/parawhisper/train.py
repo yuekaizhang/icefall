@@ -234,17 +234,14 @@ def get_parser():
     )
 
     parser.add_argument(
-        "--enable-nar-training",
-        type=str2bool,
-        default=True,
-        help="Should NAR training enabled or not",
-    )
-
-    parser.add_argument(
-        "--ctc-only",
-        type=str2bool,
-        default=True,
-        help="Whether to use CTC only.",
+        "--method",
+        type=str,
+        default="cif",
+        help="""The method to use for training.
+        cif: Cif only
+        ctc_only: CTC only
+        cif_ar: Cif and AR
+        cif_ar_distill_feature: Cif, AR and distillation"""
     )
 
     parser.add_argument(
@@ -535,14 +532,17 @@ def compute_loss(
     target_tokens = _batch_tensors(
         [tokens for tokens in text_tokens_list], pad_value=50256
     )
-    second_stage = False
-    if not params.ctc_only:
-        if second_stage:
-            loss, loss_decoder, loss_quantity = model.forward_no_oracle_target_len(feature, feature_lens, prev_outputs_tokens, target_tokens, target_lengths, is_training)
-        else:
-            loss, loss_decoder, loss_quantity = model(feature, feature_lens, prev_outputs_tokens, target_tokens, target_lengths, is_training)
-    else:
+
+    if params.method == "cif_ar":
+        loss, loss_decoder, loss_quantity, loss_ar_decoder, loss_distill = model.forward_nar_ar(feature, feature_lens, prev_outputs_tokens, target_tokens, target_lengths, is_training)
+    elif params.method == "cif":
+        loss, loss_decoder, loss_quantity = model(feature, feature_lens, prev_outputs_tokens, target_tokens, target_lengths, is_training)
+    elif params.method == "cif_ar_distill_feature":
+        loss, loss_decoder, loss_quantity, loss_ar_decoder, loss_distill = model.forward_nar_ar_feature(feature, feature_lens, prev_outputs_tokens, target_tokens, target_lengths, is_training)
+    elif params.method == "ctc_only":
         loss, loss_decoder, loss_quantity = model.forward_ctc_only(feature, feature_lens, prev_outputs_tokens, target_tokens, target_lengths, is_training)
+    else:
+        raise NotImplementedError
 
     info = MetricsTracker()
     with warnings.catch_warnings():
@@ -553,6 +553,9 @@ def compute_loss(
     info["loss"] = loss.detach().cpu().item()
     info["loss_decoder"] = loss_decoder.detach().cpu().item()
     info["loss_quantity"] = loss_quantity.detach().cpu().item()
+    if 'ar' in params.method:
+        info["loss_ar_decoder"] = loss_ar_decoder.detach().cpu().item()
+        info["loss_distill"] = loss_distill.detach().cpu().item()
 
     return loss, info
 

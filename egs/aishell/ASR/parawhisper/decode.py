@@ -191,10 +191,12 @@ def get_parser():
     parser.add_argument(
         "--method",
         type=str,
-        default="beam-search",
+        default="cif",
         help="""Decoding method.
         Supported values are:
-          - beam-search
+          - cif
+          - ar
+          - cif-oracle
         """,
     )
 
@@ -238,7 +240,7 @@ def get_parser():
     parser.add_argument(
         "--ctc-only",
         type=str2bool,
-        default=True,
+        default=False,
         help="Whether to use CTC only.",
     )
 
@@ -306,8 +308,7 @@ def decode_one_batch(
         + [model.tokenizer.eot]
         for text in texts
     ]
-    use_oracle_num_token = True
-    if use_oracle_num_token:
+    if 'oracle' in params.method:
         text_tokens_tensor = [
             torch.LongTensor(text_tokens) for text_tokens in text_tokens_list
         ]
@@ -316,10 +317,15 @@ def decode_one_batch(
         target_lengths = None
     
     if not params.ctc_only:
-        # hyps, pred_tokens = model.decode_cif_prior(feature, feature_len, target_lengths)
-        hyps, pred_tokens = model.decode(feature, feature_len, target_lengths)
-        # remove all 50257 in the pred_tokens
-        pred_tokens = [list(filter(lambda x: x != 50257, tokens)) for tokens in pred_tokens]
+        if params.method == "ar":
+            results = model.whisper_model.decode(feature, params.decoding_options)
+            hyps = [result.text for result in results]
+            pred_tokens = [result.tokens for result in results]
+        else:
+            # hyps, pred_tokens = model.decode_cif_rescore(feature, feature_len, target_lengths)
+            hyps, pred_tokens = model.decode(feature, feature_len, target_lengths)
+            # remove all tokens after the first 50257 in the pred_tokens
+            pred_tokens = [tokens[:tokens.index(50257)] if 50257 in tokens else tokens for tokens in pred_tokens]
     else:
         hyps, pred_tokens = model.ctc_decode(feature, feature_len)
 
@@ -329,7 +335,7 @@ def decode_one_batch(
     hyps = to_simple(hyps)
     hyps = [params.normalizer.normalize(hyp) for hyp in hyps]
     print(hyps)
-    return {"beam-search": hyps}, pred_tokens, text_tokens_list
+    return {params.method: hyps}, pred_tokens, text_tokens_list
 
 
 def decode_dataset(
@@ -458,7 +464,7 @@ def save_token_results(
         label = [str(l) for l in label]
         results_char.append((cut_id, label, pred))
     errs_filename = (
-        params.exp_dir / f"errs-{test_set_name}-token-{params.suffix}.txt"
+        params.exp_dir / f"errs-{test_set_name}-token-{params.method}-{params.suffix}.txt"
     )
     with open(errs_filename, "w") as f:
         wer = write_error_stats(
@@ -470,7 +476,7 @@ def save_token_results(
         logging.info("Wrote detailed error stats to {}".format(errs_filename))
 
     test_set_wers = sorted(test_set_wers.items(), key=lambda x: x[1])
-    errs_info = params.exp_dir / f"cer-summary-{test_set_name}-token-{params.suffix}.txt"
+    errs_info = params.exp_dir / f"cer-summary-{test_set_name}-token-{params.method}-{params.suffix}.txt"
     # calculate the sentence level token num accuracy
     # e.g. len(pred) = 10, len(label) = 10, then the total_sentence_num += 1
     total_sentence_num = 0
