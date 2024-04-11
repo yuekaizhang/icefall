@@ -539,6 +539,10 @@ def compute_loss(
         loss, loss_decoder, loss_quantity = model(feature, feature_lens, prev_outputs_tokens, target_tokens, target_lengths, is_training)
     elif params.method == "cif_ar_distill_feature":
         loss, loss_decoder, loss_quantity, loss_ar_decoder, loss_distill = model.forward_nar_ar_feature(feature, feature_lens, prev_outputs_tokens, target_tokens, target_lengths, is_training)
+    elif params.method == "cif_ar_distill_embedding":
+        loss, loss_decoder, loss_quantity, loss_ar_decoder, loss_distill = model.forward_nar_ar_embedding(feature, feature_lens, prev_outputs_tokens, target_tokens, target_lengths, is_training)
+    elif params.method == "cif_ar_causal":
+        loss, loss_decoder, loss_quantity, loss_ar_decoder, loss_distill = model.forward_nar_ar_causal(feature, feature_lens, prev_outputs_tokens, target_tokens, target_lengths, is_training)
     elif params.method == "ctc_only":
         loss, loss_decoder, loss_quantity = model.forward_ctc_only(feature, feature_lens, prev_outputs_tokens, target_tokens, target_lengths, is_training)
     else:

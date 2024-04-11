@@ -184,6 +184,63 @@ class ParaWhisper(torch.nn.Module):
         assert loss.requires_grad == is_training
         return (loss, loss_decoder, loss_quantity, loss_ar_decoder, loss_distill)
 
+    def forward_nar_ar_causal(
+        self,
+        feature: torch.Tensor,
+        feature_len: torch.Tensor,
+        prev_outputs_tokens: torch.Tensor,
+        target_tokens: torch.Tensor,
+        target_lengths: torch.Tensor,
+        is_training: bool,
+    ):
+        """Frontend + Encoder + Predictor + Decoder + Calc loss
+
+        loss: loss_quantity + loss_nar_decoder + loss_ar_decoder + loss_distill
+        """
+        with torch.set_grad_enabled(is_training):
+            encoder_out = self.whisper_model.encoder(feature)
+            prev_outputs_tokens = prev_outputs_tokens.to(encoder_out.device)
+            text_ar_logits = self.whisper_model.decoder(prev_outputs_tokens, encoder_out)
+            target_tokens = target_tokens.to(text_ar_logits.device)
+            loss_ar_decoder = self.decoder_criterion(text_ar_logits, target_tokens)
+
+            encoder_out_len = feature_len // 2
+            encoder_out_mask = make_non_pad_mask(encoder_out_len, encoder_out.shape[1]).unsqueeze(1)  # (B, 1, T)
+            acoustic_embd, token_num, _, _ = self.cif_predictor(
+                encoder_out, mask=encoder_out_mask, target_label_length=target_lengths.to(encoder_out.device))
+            target_lengths = target_lengths.to(encoder_out.device)
+            loss_quantity = torch.nn.functional.l1_loss(
+                token_num,
+                target_lengths.to(token_num.dtype),
+                reduction='sum',
+            )
+            loss_quantity = loss_quantity / target_lengths.sum().to(token_num.dtype)
+
+            acoustic_embd = self._sampler(
+                encoder_out,
+                prev_outputs_tokens,
+                target_tokens,
+                target_lengths,
+                acoustic_embd,
+                causal=True,
+            )
+            text_logits = self.whisper_model.decoder.forward_nar_causal(acoustic_embd, encoder_out)
+            loss_decoder = self.decoder_criterion(text_logits, target_tokens)
+
+            # distillation loss between ar and nar decoder_logits, ar distribution is the target, and should be disabled the gradient
+            temperature = 2.0
+            if not is_training:
+                temperature = 1.0
+            student_distribution = nn.functional.log_softmax(text_logits / temperature, dim=-1)
+            teacher_distribution = nn.functional.softmax(text_ar_logits / temperature, dim=-1)
+            # disable the gradient of teacher_distribution
+            teacher_distribution = teacher_distribution.detach()
+            loss_distill = self.kl_divergence(teacher_distribution, student_distribution, target_tokens) * temperature**2
+
+            loss = loss_decoder + 100 * loss_quantity + 1.0 * loss_ar_decoder + 1.0 * loss_distill
+        assert loss.requires_grad == is_training
+        return (loss, loss_decoder, loss_quantity, loss_ar_decoder, loss_distill)
+
     def forward_nar_ar_feature(
         self,
         feature: torch.Tensor,
@@ -233,6 +290,56 @@ class ParaWhisper(torch.nn.Module):
         assert loss.requires_grad == is_training
         return (loss, loss_decoder, loss_quantity, loss_ar_decoder, loss_distill)
 
+    def forward_nar_ar_embedding(
+        self,
+        feature: torch.Tensor,
+        feature_len: torch.Tensor,
+        prev_outputs_tokens: torch.Tensor,
+        target_tokens: torch.Tensor,
+        target_lengths: torch.Tensor,
+        is_training: bool,
+    ):
+        """Frontend + Encoder + Predictor + Decoder + Calc loss
+
+        loss: loss_quantity + loss_nar_decoder + loss_ar_decoder + loss_distill
+        """
+        with torch.set_grad_enabled(is_training):
+            encoder_out = self.whisper_model.encoder(feature)
+            prev_outputs_tokens = prev_outputs_tokens.to(encoder_out.device)
+            text_ar_logits, text_ar_feats = self.whisper_model.decoder(prev_outputs_tokens, encoder_out, return_second_top_feature=True)
+            target_tokens = target_tokens.to(text_ar_logits.device)
+            loss_ar_decoder = self.decoder_criterion(text_ar_logits, target_tokens)
+
+            encoder_out_len = feature_len // 2
+            encoder_out_mask = make_non_pad_mask(encoder_out_len, encoder_out.shape[1]).unsqueeze(1)  # (B, 1, T)
+            acoustic_embd, token_num, _, _ = self.cif_predictor(
+                encoder_out, mask=encoder_out_mask, target_label_length=target_lengths.to(encoder_out.device))
+            target_lengths = target_lengths.to(encoder_out.device)
+            loss_quantity = torch.nn.functional.l1_loss(
+                token_num,
+                target_lengths.to(token_num.dtype),
+                reduction='sum',
+            )
+            loss_quantity = loss_quantity / target_lengths.sum().to(token_num.dtype)
+
+            acoustic_embd = self._sampler(
+                encoder_out,
+                prev_outputs_tokens,
+                target_tokens,
+                target_lengths,
+                acoustic_embd,
+            )
+            text_logits, text_nar_feats = self.whisper_model.decoder.forward_nar(acoustic_embd, encoder_out, return_second_top_feature=True)
+            loss_decoder = self.decoder_criterion(text_logits, target_tokens)
+
+            # distillation loss between ar and nar second top feature, ar feats should be disabled the gradient, using smooth l1 loss
+            ys_pad_embed = self.whisper_model.decoder.token_embedding(prev_outputs_tokens)
+            loss_distill = self.smooth_l1_loss(acoustic_embd, ys_pad_embed.detach(), target_tokens)
+
+            loss = loss_decoder + 100 * loss_quantity + 1.0 * loss_ar_decoder + 1.0 * loss_distill
+        assert loss.requires_grad == is_training
+        return (loss, loss_decoder, loss_quantity, loss_ar_decoder, loss_distill)
+
     def forward_ctc_only(
         self,
         feature: torch.Tensor,
@@ -264,7 +371,7 @@ class ParaWhisper(torch.nn.Module):
 
     @torch.jit.ignore(drop=True)
     def _sampler(self, encoder_out, prev_outputs_tokens, ys_pad, ys_pad_lens,
-                 pre_acoustic_embeds):
+                 pre_acoustic_embeds, causal=False):
         device = encoder_out.device
         B, _ = ys_pad.size()
 
@@ -280,7 +387,10 @@ class ParaWhisper(torch.nn.Module):
         with torch.no_grad():
             # decoder_out, _, _ = self.decoder(encoder_out, encoder_out_mask,
             #                                  pre_acoustic_embeds, ys_pad_lens)
-            decoder_out = self.whisper_model.decoder.forward_nar(pre_acoustic_embeds, encoder_out)
+            if causal:
+                decoder_out = self.whisper_model.decoder.forward_nar_causal(pre_acoustic_embeds, encoder_out)
+            else:
+                decoder_out = self.whisper_model.decoder.forward_nar(pre_acoustic_embeds, encoder_out)
             # decoder_out = suppress_tokens(decoder_out, self.suppress_tokens_list, -10000)
             pred_tokens = decoder_out.argmax(-1)
 
@@ -346,6 +456,8 @@ class ParaWhisper(torch.nn.Module):
 
 
         decoder_out = self.whisper_model.decoder.forward_nar(acoustic_embed, encoder_out)
+        #decoder_out = self.whisper_model.decoder.forward_nar_causal(acoustic_embed, encoder_out)
+
 
 
         pred = decoder_out.argmax(dim=-1)
