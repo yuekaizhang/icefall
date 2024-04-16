@@ -321,6 +321,32 @@ def decode_one_batch(
             results = model.whisper_model.decode(feature, params.decoding_options)
             hyps = [result.text for result in results]
             pred_tokens = [result.tokens for result in results]
+        elif params.method == "diagnostic":
+            from typing import Any
+            from torch.nn.functional import pad as pad_tensor
+
+            def _batch_tensors(tensors: List[torch.Tensor], pad_value: Any) -> torch.Tensor:
+                padding_size = max(tensor.shape[0] for tensor in tensors)
+                dims = len(tensors[0].shape)
+                padded_tensors = []
+                for tensor in tensors:
+                    padding = [0] * 2 * dims
+                    padding[-1] = padding_size - tensor.shape[0]
+                    padded_tensors.append(pad_tensor(tensor, padding, "constant", pad_value))
+                return torch.stack([tensor for tensor in padded_tensors], dim=0)
+            input_text_tokens_list = [
+                [model.tokenizer.sot] + 
+                model.tokenizer.encode(text)
+                for text in texts
+            ]
+            # convert it to torch tensor
+            input_text_tokens_list = [
+                torch.LongTensor(text_tokens) for text_tokens in input_text_tokens_list
+            ]
+            prev_outputs_tokens = _batch_tensors(
+                [tokens for tokens in input_text_tokens_list], pad_value=model.pad_id
+            )
+            hyps, pred_tokens = model.decode_diagnostic(feature, feature_len, prev_outputs_tokens, target_lengths)
         else:
             # hyps, pred_tokens = model.decode_cif_rescore(feature, feature_len, target_lengths)
             hyps, pred_tokens = model.decode(feature, feature_len, target_lengths)

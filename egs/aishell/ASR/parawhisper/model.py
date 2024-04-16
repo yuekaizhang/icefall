@@ -25,6 +25,7 @@ from label_smoothing import LabelSmoothingLoss
 from whisper_tokens import load_new_tokens_dict_list
 from custom_tokens import CustomTokenizer
 from ctc import CTC
+import logging
 
 class ParaWhisper(torch.nn.Module):
     """ Paraformer: Fast and Accurate Parallel Transformer for
@@ -113,7 +114,7 @@ class ParaWhisper(torch.nn.Module):
                 target_lengths.to(token_num.dtype),
                 reduction='sum',
             )
-            # print("token_num", token_num, "target_lengths", target_lengths)
+            # logging.info("token_num", token_num, "target_lengths", target_lengths)
             loss_quantity = loss_quantity / target_lengths.sum().to(token_num.dtype)
 
 
@@ -471,10 +472,94 @@ class ParaWhisper(torch.nn.Module):
                 pred_tokens = tokens
             # pred_tokens = tokens
             hyp = self.tokenizer.decode(pred_tokens)
-            # print(hyp, pred_tokens, acoustic_embed.shape, token_num)
+            # logging.info(hyp, pred_tokens, acoustic_embed.shape, token_num)
             s = re.sub(r'<\|.*?\|>', '', hyp)
             # s = remove_non_chinese(s)
             hyps.append(s)
+        return hyps, pred
+
+    def decode_diagnostic(
+        self,
+        speech: torch.Tensor,
+        speech_lengths: torch.Tensor,
+        text_tokens_tensor: torch.Tensor,
+        oracle_target_label_length: torch.Tensor=None,
+    ) -> Dict[str, torch.Tensor]:
+
+            # encoder
+        encoder_out = self.whisper_model.encoder(speech)
+        encoder_out_len = speech_lengths // 2
+        encoder_out_mask = make_non_pad_mask(encoder_out_len, encoder_out.shape[1]).unsqueeze(1)  # (B, 1, T)
+        encoder_out_mask = encoder_out_mask.to(encoder_out.device)
+        # cif predictor
+        # convert encoder_out to torch.float32
+        encoder_out = encoder_out.to(dtype=torch.float32)
+        if oracle_target_label_length is not None:
+            oracle_target_label_length = oracle_target_label_length.to(encoder_out.device)
+
+        acoustic_embed, token_num, alphas, cif_peaks,= self.cif_predictor(
+            encoder_out, mask=encoder_out_mask, target_label_length=oracle_target_label_length)
+        # acoustic_embed, token_num, _, _,= self.cif_predictor(
+        #     encoder_out, mask=encoder_out_mask)
+        token_num = token_num.floor().to(speech_lengths.dtype)
+
+
+        decoder_out = self.whisper_model.decoder.forward_nar(acoustic_embed, encoder_out)
+        text_ar_logits = self.whisper_model.decoder(text_tokens_tensor.to(encoder_out.device), encoder_out)
+
+        # get the probabilities of the predicted tokens
+        text_nar_probs = torch.nn.functional.softmax(decoder_out, dim=-1)
+        text_ar_probs = torch.nn.functional.softmax(text_ar_logits, dim=-1)
+
+        # save batch position 1's probs into a single excel file, along with top-10 tokens as well as their probs
+        import pandas as pd
+        import numpy as np
+        import os
+        import openpyxl
+        from openpyxl import load_workbook
+        from openpyxl.utils.dataframe import dataframe_to_rows
+
+        # get the top-10 tokens and their probs
+        top_10_nar_probs, top_10_nar_tokens = torch.topk(text_nar_probs[0], 10)
+        top_10_ar_probs, top_10_ar_tokens = torch.topk(text_ar_probs[0], 10)
+
+        # convert to numpy
+        top_10_nar_probs = top_10_nar_probs.cpu().detach().tolist()
+        top_10_nar_tokens = top_10_nar_tokens.cpu().detach().tolist()
+        top_10_ar_probs = top_10_ar_probs.cpu().detach().tolist()
+        top_10_ar_tokens = top_10_ar_tokens.cpu().detach().tolist()
+
+        # convert to pandas dataframe
+        # top_10_nar_probs_df = pd.DataFrame(top_10_nar_probs)
+        # top_10_nar_tokens_df = pd.DataFrame(top_10_nar_tokens)
+        # top_10_ar_probs_df = pd.DataFrame(top_10_ar_probs)
+        # top_10_ar_tokens_df = pd.DataFrame(top_10_ar_tokens)
+        
+        # df = pd.DataFrame({'top_10_nar_probs': top_10_nar_probs, 'top_10_nar_tokens': top_10_nar_tokens, 'top_10_ar_probs': top_10_ar_probs, 'top_10_ar_tokens': top_10_ar_tokens})
+        # df.to_excel('top_tokens_probabilities.xlsx', index=False)
+        logging.info(f'top_10_nar_probs: {top_10_nar_probs}')
+        logging.info(f'top_10_nar_tokens: {top_10_nar_tokens}')
+        logging.info(f'top_10_ar_probs: {top_10_ar_probs}')
+        logging.info(f'top_10_ar_tokens: {top_10_ar_tokens}')
+
+        pred = decoder_out.argmax(dim=-1)
+        pred = pred.tolist()
+        hyps = []
+        for i, tokens in enumerate(pred):
+            # keep tokens until first 50257 sos token
+            if 50257 in tokens and tokens.index(50257) > 4:
+                pred_tokens = tokens[: tokens.index(50257)]
+            else:
+                pred_tokens = tokens
+            # pred_tokens = tokens
+            hyp = self.tokenizer.decode(pred_tokens)
+            # logging.info(hyp, pred_tokens, acoustic_embed.shape, token_num)
+            s = re.sub(r'<\|.*?\|>', '', hyp)
+            # s = remove_non_chinese(s)
+            hyps.append(s)
+        ground_truth = self.tokenizer.decode(text_tokens_tensor[0].tolist())
+        logging.info(hyps, pred, text_tokens_tensor, ground_truth)
+        logging.info("====================================")
         return hyps, pred
 
     def decode_cif_rescore(
@@ -513,7 +598,7 @@ class ParaWhisper(torch.nn.Module):
         acoustic_embed_minus, token_num_minus, _, _,= self.cif_predictor(
             encoder_out, mask=encoder_out_mask, target_label_length=token_num-1)
 
-        print(acoustic_embed.shape, acoustic_embed_minus.shape, acoustic_embed_plus.shape, oracle_target_label_length)
+        logging.info(acoustic_embed.shape, acoustic_embed_minus.shape, acoustic_embed_plus.shape, oracle_target_label_length)
 
 
         # acoustic_embed, token_num, _, _,= self.cif_predictor(
@@ -549,7 +634,7 @@ class ParaWhisper(torch.nn.Module):
         scores_minus = scores_minus.tolist()
         pred_minus = pred_minus.tolist()
 
-        print(scores, scores_minus, scores_plus, 2333333333333333333333333333333333333333333333333)
+        logging.info(scores, scores_minus, scores_plus, 2333333333333333333333333333333333333333333333333)
 
 
         # according to scores, select the best one from pred, pred_plus, pred_minus
@@ -565,7 +650,7 @@ class ParaWhisper(torch.nn.Module):
             #     pred_tokens = tokens
             pred_tokens = tokens
             hyp = self.tokenizer.decode(pred_tokens)
-            # print(hyp, pred_tokens, acoustic_embed.shape, token_num)
+            # logging.info(hyp, pred_tokens, acoustic_embed.shape, token_num)
             s = re.sub(r'<\|.*?\|>', '', hyp)
             # s = remove_non_chinese(s)
             hyps.append(s)
@@ -581,7 +666,7 @@ class ParaWhisper(torch.nn.Module):
         hyps = []
         for tokens in pred_tokens:
             hyp = self.tokenizer.decode(tokens)
-            print(hyp, tokens)
+            logging.info(hyp, tokens)
             hyps.append(hyp)
         return hyps, pred_tokens
    
