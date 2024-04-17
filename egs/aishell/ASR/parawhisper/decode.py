@@ -347,7 +347,14 @@ def decode_one_batch(
                 [tokens for tokens in input_text_tokens_list], pad_value=model.pad_id
             )
             hyps, pred_tokens = model.decode_diagnostic(feature, feature_len, prev_outputs_tokens, target_lengths)
+        elif params.method == "mask_predict_oracle":
+            hyps, pred_tokens = model.decode_mask_predict(feature, feature_len, target_lengths)
+            pred_tokens = [tokens[:tokens.index(50257)] if 50257 in tokens else tokens for tokens in pred_tokens]
+        elif params.method == "mask_predict_oracle_iterative":
+            hyps, pred_tokens = model.decode_mask_predict_iterative(feature, feature_len, target_lengths)
+            pred_tokens = [tokens[:tokens.index(50257)] if 50257 in tokens else tokens for tokens in pred_tokens]          
         else:
+            assert 'cif' in params.method
             # hyps, pred_tokens = model.decode_cif_rescore(feature, feature_len, target_lengths)
             hyps, pred_tokens = model.decode(feature, feature_len, target_lengths)
             # remove all tokens after the first 50257 in the pred_tokens

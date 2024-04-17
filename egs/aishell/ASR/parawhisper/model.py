@@ -185,6 +185,67 @@ class ParaWhisper(torch.nn.Module):
         assert loss.requires_grad == is_training
         return (loss, loss_decoder, loss_quantity, loss_ar_decoder, loss_distill)
 
+    def forward_nar_mask(
+        self,
+        feature: torch.Tensor,
+        feature_len: torch.Tensor,
+        prev_outputs_tokens: torch.Tensor,
+        target_tokens: torch.Tensor,
+        target_lengths: torch.Tensor,
+        is_training: bool,
+    ):
+        """Frontend + Encoder + Predictor + Decoder + Calc loss
+
+        loss: loss_quantity + loss_nar_decoder + loss_ar_decoder + loss_distill
+        """
+        with torch.set_grad_enabled(is_training):
+            encoder_out = self.whisper_model.encoder(feature)
+
+            prev_outputs_tokens = prev_outputs_tokens.to(encoder_out.device)
+            target_tokens = target_tokens.to(encoder_out.device)
+            
+
+            #text_ar_logits = self.whisper_model.decoder(prev_outputs_tokens, encoder_out)
+            # target_tokens = target_tokens.to(text_ar_logits.device)
+            #loss_ar_decoder = self.decoder_criterion(text_ar_logits, target_tokens)
+
+            # encoder_out_len = feature_len // 2
+            # encoder_out_mask = make_non_pad_mask(encoder_out_len, encoder_out.shape[1]).unsqueeze(1)  # (B, 1, T)
+            # acoustic_embd, token_num, _, _ = self.cif_predictor(
+            #     encoder_out, mask=encoder_out_mask, target_label_length=target_lengths.to(encoder_out.device))
+            # target_lengths = target_lengths.to(encoder_out.device)
+            # loss_quantity = torch.nn.functional.l1_loss(
+            #     token_num,
+            #     target_lengths.to(token_num.dtype),
+            #     reduction='sum',
+            # )
+            # loss_quantity = loss_quantity / target_lengths.sum().to(token_num.dtype)
+
+            # acoustic_embd = self._sampler(
+            #     encoder_out,
+            #     prev_outputs_tokens,
+            #     target_tokens,
+            #     target_lengths,
+            #     acoustic_embd,
+            # )
+            text_logits = self.whisper_model.decoder.forward_nar_mask(prev_outputs_tokens, encoder_out)
+            loss_decoder = self.decoder_criterion(text_logits, target_tokens)
+
+            # distillation loss between ar and nar decoder_logits, ar distribution is the target, and should be disabled the gradient
+            # temperature = 2.0
+            # if not is_training:
+            #     temperature = 1.0
+            # student_distribution = nn.functional.log_softmax(text_logits / temperature, dim=-1)
+            # teacher_distribution = nn.functional.softmax(text_ar_logits / temperature, dim=-1)
+            # # disable the gradient of teacher_distribution
+            # teacher_distribution = teacher_distribution.detach()
+            # loss_distill = self.kl_divergence(teacher_distribution, student_distribution, target_tokens) * temperature**2
+
+            # loss = loss_decoder + 100 * loss_quantity + 1.0 * loss_ar_decoder + 1.0 * loss_distill
+            loss = loss_decoder
+        assert loss.requires_grad == is_training
+        return (loss, loss_decoder)
+
     def forward_nar_ar_causal(
         self,
         feature: torch.Tensor,
@@ -477,6 +538,157 @@ class ParaWhisper(torch.nn.Module):
             # s = remove_non_chinese(s)
             hyps.append(s)
         return hyps, pred
+
+    def decode_mask_predict(
+        self,
+        speech: torch.Tensor,
+        speech_lengths: torch.Tensor,
+        oracle_target_label_length: torch.Tensor=None,
+    ) -> Dict[str, torch.Tensor]:
+        def remove_non_chinese(text):
+            # Define a pattern for matching Chinese characters
+            # This pattern matches characters in the range of Unicode Chinese characters
+            pattern = re.compile(r'[^\u4e00-\u9fff]+')
+            
+            # Replace all non-Chinese characters with an empty string
+            filtered_text = pattern.sub('', text)
+            
+            return filtered_text
+            # encoder
+        encoder_out = self.whisper_model.encoder(speech)
+        encoder_out_len = speech_lengths // 2
+        encoder_out_mask = make_non_pad_mask(encoder_out_len, encoder_out.shape[1]).unsqueeze(1)  # (B, 1, T)
+        encoder_out_mask = encoder_out_mask.to(encoder_out.device)
+        # cif predictor
+        # convert encoder_out to torch.float32
+        encoder_out = encoder_out.to(dtype=torch.float32)
+        if oracle_target_label_length is not None:
+            oracle_target_label_length = oracle_target_label_length.to(encoder_out.device)
+
+        # acoustic_embed, token_num, alphas, cif_peaks,= self.cif_predictor(
+        #     encoder_out, mask=encoder_out_mask, target_label_length=oracle_target_label_length)
+        # token_num = token_num.floor().to(speech_lengths.dtype)
+
+        if oracle_target_label_length is not None:
+            len_prev_outputs_tokens = oracle_target_label_length.max().item()
+        else:
+            len_prev_outputs_tokens = 60
+            # shape of prev_outputs_tokens: (B, oracle_target_label_length), all 50256, except the first token is 50258
+        prev_outputs_tokens = torch.full((encoder_out.shape[0], len_prev_outputs_tokens), 50256, dtype=torch.long, device=encoder_out.device)
+        prev_outputs_tokens[:, 0] = 50258
+        decoder_out = self.whisper_model.decoder.forward_nar_mask(prev_outputs_tokens, encoder_out)
+
+        pred = decoder_out.argmax(dim=-1)
+        pred = pred.tolist()
+        print(len(pred), pred, prev_outputs_tokens)
+        hyps = []
+        for i, tokens in enumerate(pred):
+            # keep tokens until first 50257 sos token
+            if 50257 in tokens and tokens.index(50257) > 4:
+                pred_tokens = tokens[: tokens.index(50257)]
+            else:
+                pred_tokens = tokens
+            # pred_tokens = tokens
+            hyp = self.tokenizer.decode(pred_tokens)
+            # logging.info(hyp, pred_tokens, acoustic_embed.shape, token_num)
+            s = re.sub(r'<\|.*?\|>', '', hyp)
+            # s = remove_non_chinese(s)
+            hyps.append(s)
+        return hyps, pred
+
+    def decode_mask_predict_iterative(
+        self,
+        speech: torch.Tensor,
+        speech_lengths: torch.Tensor,
+        oracle_target_label_length: torch.Tensor=None,
+    ) -> Dict[str, torch.Tensor]:
+        def remove_non_chinese(text):
+            # Define a pattern for matching Chinese characters
+            # This pattern matches characters in the range of Unicode Chinese characters
+            pattern = re.compile(r'[^\u4e00-\u9fff]+')
+            
+            # Replace all non-Chinese characters with an empty string
+            filtered_text = pattern.sub('', text)
+            
+            return filtered_text
+            # encoder
+        encoder_out = self.whisper_model.encoder(speech)
+        encoder_out_len = speech_lengths // 2
+        encoder_out_mask = make_non_pad_mask(encoder_out_len, encoder_out.shape[1]).unsqueeze(1)  # (B, 1, T)
+        encoder_out_mask = encoder_out_mask.to(encoder_out.device)
+        # cif predictor
+        # convert encoder_out to torch.float32
+        encoder_out = encoder_out.to(dtype=torch.float32)
+        if oracle_target_label_length is not None:
+            oracle_target_label_length = oracle_target_label_length.to(encoder_out.device)
+
+        # acoustic_embed, token_num, alphas, cif_peaks,= self.cif_predictor(
+        #     encoder_out, mask=encoder_out_mask, target_label_length=oracle_target_label_length)
+        # token_num = token_num.floor().to(speech_lengths.dtype)
+
+        if oracle_target_label_length is not None:
+            len_prev_outputs_tokens = oracle_target_label_length.max().item()
+        else:
+            len_prev_outputs_tokens = 60
+            # shape of prev_outputs_tokens: (B, oracle_target_label_length), all 50256, except the first token is 50258
+        prev_outputs_tokens = torch.full((encoder_out.shape[0], len_prev_outputs_tokens), 50256, dtype=torch.long, device=encoder_out.device)
+        prev_outputs_tokens[:, 0] = 50258
+        decoder_out = self.whisper_model.decoder.forward_nar_mask(prev_outputs_tokens, encoder_out)
+        
+        decoder_out = self.iterative_sampling(decoder_out, prev_outputs_tokens, encoder_out, iter_times=2)
+
+        pred = decoder_out.argmax(dim=-1)
+
+        pred = pred.tolist()
+        print(len(pred), pred, prev_outputs_tokens)
+        hyps = []
+        for i, tokens in enumerate(pred):
+            # keep tokens until first 50257 sos token
+            if 50257 in tokens and tokens.index(50257) > 4:
+                pred_tokens = tokens[: tokens.index(50257)]
+            else:
+                pred_tokens = tokens
+            # pred_tokens = tokens
+            hyp = self.tokenizer.decode(pred_tokens)
+            # logging.info(hyp, pred_tokens, acoustic_embed.shape, token_num)
+            s = re.sub(r'<\|.*?\|>', '', hyp)
+            # s = remove_non_chinese(s)
+            hyps.append(s)
+        return hyps, pred
+
+    def iterative_sampling(self, decoder_out, prev_outputs_tokens, encoder_out, iter_times=3):
+        for i in range(iter_times):
+            text_probs = torch.nn.functional.softmax(decoder_out, dim=-1)
+            top_2_probs, top_2_tokens = torch.topk(text_probs, 2)
+            pred_tokens = top_2_tokens[:, :, 0]
+
+            prev_outputs_tokens[:, 0] = 50258
+            prev_outputs_tokens[:, 1:-1] = pred_tokens[:, :-1]
+
+            # change prev_outputs_tokens, replace the less confident token with 50256
+            # mask tokens if the top-1 prob - top-2 prob < 0.5
+            mask = top_2_probs[:, :, 0] - top_2_probs[:, :, 1] < 0.5
+            prev_outputs_tokens = torch.where(mask, torch.full_like(prev_outputs_tokens, 50256), prev_outputs_tokens)
+
+            decoder_out = self.whisper_model.decoder.forward_nar_mask(prev_outputs_tokens, encoder_out)
+
+            pred = pred_tokens.tolist()
+            hyps = []
+            for i, tokens in enumerate(pred):
+                # keep tokens until first 50257 sos token
+                if 50257 in tokens and tokens.index(50257) > 4:
+                    pred_tokens = tokens[: tokens.index(50257)]
+                else:
+                    pred_tokens = tokens
+                # pred_tokens = tokens
+                hyp = self.tokenizer.decode(pred_tokens)
+                # logging.info(hyp, pred_tokens, acoustic_embed.shape, token_num)
+                s = re.sub(r'<\|.*?\|>', '', hyp)
+                # s = remove_non_chinese(s)
+                hyps.append(s)
+            print(f"iter{i}", hyps) 
+        return decoder_out
+
 
     def decode_diagnostic(
         self,

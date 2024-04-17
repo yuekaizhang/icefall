@@ -545,6 +545,59 @@ def compute_loss(
         loss, loss_decoder, loss_quantity, loss_ar_decoder, loss_distill = model.forward_nar_ar_causal(feature, feature_lens, prev_outputs_tokens, target_tokens, target_lengths, is_training)
     elif params.method == "ctc_only":
         loss, loss_decoder, loss_quantity = model.forward_ctc_only(feature, feature_lens, prev_outputs_tokens, target_tokens, target_lengths, is_training)
+    elif params.method == "mask_predict":
+        # input bos, 0, 1, 2, 3, pad_id
+        # output 0, 1, 2, 3, eos, pad_id
+
+        # mask next token prediction
+        # input    bos, 0,  1,        pad_id, 3,         pad_id
+        # output    0,  1,  2(loss),     3,   eos(loss), pad_id
+        # changed output to compute loss
+        #          pad, pad, 2,         pad,  eos,       pad  
+
+        # mask current token prediction
+        # input,   0,   1, pad_id,  3,   pad_id,   pad_id
+        # output,  0,   1,  2(loss) 3,   eos(loss), pad_id
+        # changed output to compute loss
+        #          pad, pad, 2,     pad, eos,      pad
+        text_tokens_list = [
+            tokenizer.encode(text)
+            for text in texts
+        ]
+        text_tokens_tensor_list = [
+            torch.LongTensor(text_tokens) for text_tokens in text_tokens_list
+        ] 
+        # random mask 20% tokens in text_tokens_list, and get them indices
+        mask_indices = []
+        for i, text_tokens in enumerate(text_tokens_list):
+            mask_indices.append(
+                torch.LongTensor(random.sample(range(0, len(text_tokens)), int(len(text_tokens) * 0.8)))
+            )
+        # mask prev_outputs_tokens according to mask_indices
+        prev_tokens_tensor_list = [
+            torch.LongTensor(text_tokens) for text_tokens in text_tokens_list
+        ]
+        target_tokens_tensor_list = [
+            torch.LongTensor(text_tokens) for text_tokens in text_tokens_list
+        ] 
+        for i, mask_index in enumerate(mask_indices):
+            prev_tokens_tensor_list[i][mask_index] = 50256
+            # for target tokens, we only keep tokens according to mask_index, and mask other tokens
+            mask_target_index_tensor = torch.zeros_like(text_tokens_tensor_list[i])
+            mask_target_index_tensor[mask_index] = 1
+            target_tokens_tensor_list[i] = text_tokens_tensor_list[i] * mask_target_index_tensor + 50256 * (1 - mask_target_index_tensor)
+            # prev_outputs_tokens add bos, target_tokens add eos
+            prev_tokens_tensor_list[i] = torch.cat([torch.LongTensor([tokenizer.sot]), prev_tokens_tensor_list[i]], dim=0)
+            target_tokens_tensor_list[i] = torch.cat([target_tokens_tensor_list[i], torch.LongTensor([tokenizer.eot])], dim=0)
+
+        prev_outputs_tokens = _batch_tensors(
+            [tokens for tokens in prev_tokens_tensor_list], pad_value=50256
+        )
+        target_tokens = _batch_tensors(
+            [tokens for tokens in target_tokens_tensor_list], pad_value=50256
+        )
+        #Wprint(prev_outputs_tokens[:2], target_tokens[:2], text_tokens_tensor_list[:2])
+        loss, loss_decoder = model.forward_nar_mask(feature, feature_lens, prev_outputs_tokens, target_tokens, target_lengths, is_training)
     else:
         raise NotImplementedError
 
@@ -556,7 +609,8 @@ def compute_loss(
     # Note: We use reduction=sum while computing the loss.
     info["loss"] = loss.detach().cpu().item()
     info["loss_decoder"] = loss_decoder.detach().cpu().item()
-    info["loss_quantity"] = loss_quantity.detach().cpu().item()
+    if 'cif' in params.method:
+        info["loss_quantity"] = loss_quantity.detach().cpu().item()
     if 'ar' in params.method:
         info["loss_ar_decoder"] = loss_ar_decoder.detach().cpu().item()
         info["loss_distill"] = loss_distill.detach().cpu().item()
