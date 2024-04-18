@@ -30,13 +30,20 @@ from lhotse import load_manifest_lazy
 
 
 def main():
+    # paths = [
+    #     "./data/fbank/cuts_S.jsonl.gz",
+    #     "./data/fbank/cuts_M.jsonl.gz",
+    #     "./data/fbank/cuts_L.jsonl.gz",
+    #     "./data/fbank/cuts_L_fixed.jsonl.gz",
+    #     "./data/fbank/cuts_DEV.jsonl.gz",
+    #     "./data/fbank/cuts_DEV_fixed.jsonl.gz",
+    #     "./data/fbank/cuts_TEST_NET.jsonl.gz",
+    #     "./data/fbank/cuts_TEST_MEETING.jsonl.gz",
+    # ]
+
     paths = [
-        "./data/fbank/cuts_S.jsonl.gz",
-        "./data/fbank/cuts_M.jsonl.gz",
-        "./data/fbank/cuts_L.jsonl.gz",
-        "./data/fbank/cuts_DEV.jsonl.gz",
-        "./data/fbank/cuts_TEST_NET.jsonl.gz",
-        "./data/fbank/cuts_TEST_MEETING.jsonl.gz",
+        "./data/fbank/cuts_L_fixed.jsonl.gz",
+        "./data/fbank/cuts_DEV_fixed.jsonl.gz",
     ]
 
     for path in paths:

@@ -43,7 +43,7 @@ class MultiDataset:
             - thchs_30_cuts_train.jsonl.gz
             - kespeech/kespeech-asr_cuts_train_phase1.jsonl.gz
             - kespeech/kespeech-asr_cuts_train_phase2.jsonl.gz
-            - wenetspeech/cuts_L.jsonl.gz
+            - wenetspeech/cuts_L_fixed.jsonl.gz
         """
         self.fbank_dir = Path(fbank_dir)
 
@@ -105,7 +105,7 @@ class MultiDataset:
         # WeNetSpeech
         logging.info("Loading WeNetSpeech in lazy mode")
         wenetspeech_L_cuts = load_manifest_lazy(
-            self.fbank_dir / "wenetspeech" / "cuts_L.jsonl.gz"
+            self.fbank_dir / "wenetspeech" / "cuts_L_fixed.jsonl.gz"
         )
 
         # KeSpeech
@@ -187,7 +187,7 @@ class MultiDataset:
         # WeNetSpeech
         logging.info("Loading WeNetSpeech DEV set in lazy mode")
         wenetspeech_dev_cuts = load_manifest_lazy(
-            self.fbank_dir / "wenetspeech" / "cuts_DEV.jsonl.gz"
+            self.fbank_dir / "wenetspeech" / "cuts_DEV_fixed.jsonl.gz"
         )
 
         return wenetspeech_dev_cuts

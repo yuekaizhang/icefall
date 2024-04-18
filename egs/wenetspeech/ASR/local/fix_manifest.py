@@ -1,3 +1,19 @@
+#!/usr/bin/env python3
+# Copyright    2024  author: Yuekai Zhang
+#
+# See ../../../../LICENSE for clarification regarding multiple authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 import logging
 import argparse
 from lhotse import CutSet, load_manifest_lazy
@@ -61,10 +77,6 @@ def fix_manifest(manifest, fixed_text_dict, fixed_manifest_path):
             else:
                 cut_id = cut_id_orgin
             if cut_id in fixed_text_dict:
-                if len(cut.supervisions) > 1:
-                    print(cut)
-                    print(233333333333333)
-                    exit()
                 assert len(cut.supervisions) == 1, f'cut {cut_id} has {len(cut.supervisions)} supervisions'
                 if cut.supervisions[0].text != fixed_text_dict[cut_id]:
                     logging.info(f'Fixed text for cut {cut_id_orgin} from {cut.supervisions[0].text} to {fixed_text_dict[cut_id]}')
@@ -80,35 +92,23 @@ def main():
     args = parser.parse_args()
     logging.info(vars(args))
 
-    operating_manifest_dir = args.manifest_dir
-    manifest_path = operating_manifest_dir + f'cuts_{args.training_subset}.jsonl.gz'
-    dev_manifest_path = operating_manifest_dir + 'cuts_DEV.jsonl.gz'
-    fixed_text_path = operating_manifest_dir + 'text.fix'
-    fixed_manifest_path = operating_manifest_dir + f'cuts_{args.training_subset}_fixed.jsonl.gz'
-    fixed_dev_manifest_path = operating_manifest_dir + 'cuts_DEV_fixed.jsonl.gz'
-
-    logging.info(f'Loading manifest from {manifest_path}')
-    cuts_manifest = load_manifest_lazy(manifest_path)
-    logging.info(f'Loading dev manifest from {dev_manifest_path}')
-    cuts_dev_manifest = load_manifest_lazy(dev_manifest_path)
-
+    fixed_text_path = args.manifest_dir + 'text.fix'
     fixed_text_dict = load_fixed_text(fixed_text_path)
     logging.info(f'Loaded {len(fixed_text_dict)} fixed texts')
 
+    dev_manifest_path = args.manifest_dir + 'cuts_DEV.jsonl.gz'
+    fixed_dev_manifest_path = args.manifest_dir + 'cuts_DEV_fixed.jsonl.gz'
+    logging.info(f'Loading dev manifest from {dev_manifest_path}')
+    cuts_dev_manifest = load_manifest_lazy(dev_manifest_path)
     fix_manifest(cuts_dev_manifest, fixed_text_dict, fixed_dev_manifest_path)
     logging.info(f'Fixed dev manifest saved to {fixed_dev_manifest_path}')
 
-    # tmp
-    verify_dev_manifest_path = operating_manifest_dir + 'cuts_DEV_fixed_verify.jsonl.gz'
-    cuts_dev_manifest = load_manifest_lazy(fixed_dev_manifest_path)
-    fixed_text_dict = load_fixed_text(fixed_text_path)
-    fix_manifest(cuts_dev_manifest, fixed_text_dict, verify_dev_manifest_path)
-    logging.info(f'Fixed dev manifest saved to {verify_dev_manifest_path}')
-
+    manifest_path = args.manifest_dir + f'cuts_{args.training_subset}.jsonl.gz'
+    fixed_manifest_path = args.manifest_dir + f'cuts_{args.training_subset}_fixed.jsonl.gz'
+    logging.info(f'Loading manifest from {manifest_path}')
+    cuts_manifest = load_manifest_lazy(manifest_path)
     fix_manifest(cuts_manifest, fixed_text_dict, fixed_manifest_path)
-    logging.info(f'Fixed manifest saved to {fixed_manifest_path}')
-
-
+    logging.info(f'Fixed training manifest saved to {fixed_manifest_path}')
 
 if __name__ == "__main__":
     main()
