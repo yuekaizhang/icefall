@@ -22,40 +22,42 @@ def load_fixed_text(fixed_text_path):
         for line in f:
             cut_id, text = line.strip().split(' ', 1)
             fixed_text_dict[cut_id] = text
-            # add speed perturbation
-            cut_id_sp_short = cut_id + '_sp0.9'
-            fixed_text_dict[cut_id_sp_short] = text
-            cut_id_sp_long = cut_id + '_sp1.1'
-            fixed_text_dict[cut_id_sp_long] = text
     return fixed_text_dict
 
 
 def fix_manifest(manifest, fixed_text_dict, fixed_manifest_path):
     fixed_cutset_list = []
     for cut in manifest:
-        cut_id = cut.id
+        cut_id_orgin = cut.id
+        if cut_id_orgin.endswith('_sp0.9'):
+            cut_id = cut_id_orgin[:-6]
+        elif cut_id_orgin.endswith('_sp1.1'):
+            cut_id = cut_id_orgin[:-6]
+            print(f'cut_id_orgin {cut_id_orgin} cut_id {cut_id}')
+        else:
+            cut_id = cut_id_orgin
         if cut_id in fixed_text_dict:
             assert len(cut.supervisions) == 1, f'cut {cut_id} has {len(cut.supervisions)} supervisions'
             if cut.supervisions[0].text != fixed_text_dict[cut_id]:
-                print(f'Fixed text for cut {cut_id} from {cut.supervisions[0].text} to {fixed_text_dict[cut_id]}')
+                print(f'Fixed text for cut {cut_id_orgin} from {cut.supervisions[0].text} to {fixed_text_dict[cut_id]}')
                 cut.supervisions[0].text = fixed_text_dict[cut_id]
             fixed_cutset_list.append(cut)
     fixed_cutset = CutSet.from_cuts(fixed_cutset_list)
     fixed_cutset.to_file(fixed_manifest_path)        
 
 if __name__ == '__main__':
-    # print(f'Loading manifest from {manifest_path}')
-    # cuts_manifest = load_manifest_lazy(manifest_path)
-    # print(f'Loading dev manifest from {dev_manifest_path}')
-    # cuts_dev_manifest = load_manifest_lazy(dev_manifest_path)
-    # fixed_text_dict = load_fixed_text(fixed_text_path)
+    print(f'Loading manifest from {manifest_path}')
+    cuts_manifest = load_manifest_lazy(manifest_path)
+    print(f'Loading dev manifest from {dev_manifest_path}')
+    cuts_dev_manifest = load_manifest_lazy(dev_manifest_path)
+    fixed_text_dict = load_fixed_text(fixed_text_path)
 
 
-    # print(f'Loaded {len(fixed_text_dict)} fixed texts')
-    # fix_manifest(cuts_dev_manifest, fixed_text_dict, fixed_dev_manifest_path)
-    # print(f'Fixed dev manifest saved to {fixed_dev_manifest_path}')
-    # fix_manifest(cuts_manifest, fixed_text_dict, fixed_manifest_path)
-    # print(f'Fixed manifest saved to {fixed_manifest_path}')
+    print(f'Loaded {len(fixed_text_dict)} fixed texts')
+    fix_manifest(cuts_dev_manifest, fixed_text_dict, fixed_dev_manifest_path)
+    print(f'Fixed dev manifest saved to {fixed_dev_manifest_path}')
+    fix_manifest(cuts_manifest, fixed_text_dict, fixed_manifest_path)
+    print(f'Fixed manifest saved to {fixed_manifest_path}')
 
 
     paths = [fixed_manifest_path, fixed_dev_manifest_path]
