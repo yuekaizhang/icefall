@@ -1,4 +1,4 @@
-from lhotse import load_manifest, CutSet, load_manifest_lazy
+from lhotse import CutSet, load_manifest_lazy
 
 operating_manifest_dir = '/workspace/icefall_zh/egs/wenetspeech/ASR/data/fbank/'
 manifest_path = operating_manifest_dir + 'cuts_L.jsonl.gz'
@@ -6,6 +6,7 @@ dev_manifest_path = operating_manifest_dir + 'cuts_DEV.jsonl.gz'
 fixed_text_path = operating_manifest_dir + 'text.fix'
 fixed_manifest_path = operating_manifest_dir + 'cuts_L_fixed.jsonl.gz'
 fixed_dev_manifest_path = operating_manifest_dir + 'cuts_DEV_fixed.jsonl.gz'
+verify_dev_manifest_path = operating_manifest_dir + 'cuts_DEV_fixed_verify.jsonl.gz'
 
 def load_fixed_text(fixed_text_path):
     """
@@ -57,13 +58,14 @@ if __name__ == '__main__':
     # print(f'Fixed manifest saved to {fixed_manifest_path}')
 
 
-    # paths = [fixed_manifest_path, fixed_dev_manifest_path]
-    # for path in paths:
-    #     print(f"Starting display the statistics for {path}")
-    #     cuts = load_manifest_lazy(path)
-    #     cuts.describe()
+    paths = [fixed_manifest_path, fixed_dev_manifest_path]
+    for path in paths:
+        print(f"Starting display the statistics for {path}")
+        cuts = load_manifest_lazy(path)
+        cuts.describe()
 
     
     cuts_dev_manifest = load_manifest_lazy(fixed_dev_manifest_path)
     fixed_text_dict = load_fixed_text(fixed_text_path)
-    fix_manifest(cuts_dev_manifest, fixed_text_dict, fixed_dev_manifest_path)
+    fix_manifest(cuts_dev_manifest, fixed_text_dict, verify_dev_manifest_path)
+    print(f'Fixed dev manifest saved to {verify_dev_manifest_path}')
