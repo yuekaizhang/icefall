@@ -38,7 +38,7 @@ def fix_manifest(manifest, fixed_text_dict, fixed_manifest_path):
                 print(f'Fixed text for cut {cut_id} from {cut.supervisions[0].text} to {fixed_text_dict[cut_id]}')
                 cut.supervisions[0].text = fixed_text_dict[cut_id]
             fixed_cutset_list.append(cut)
-    fixed_cutset = CutSet.from_cuts(fixed_cutset)
+    fixed_cutset = CutSet.from_cuts(fixed_cutset_list)
     fixed_cutset.to_file(fixed_manifest_path)        
 
 if __name__ == '__main__':
