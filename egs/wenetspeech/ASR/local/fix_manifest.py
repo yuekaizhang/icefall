@@ -1,17 +1,39 @@
+import logging
 from lhotse import CutSet, load_manifest_lazy
 
-operating_manifest_dir = '/workspace/icefall_zh/egs/wenetspeech/ASR/data/fbank/'
-manifest_path = operating_manifest_dir + 'cuts_L.jsonl.gz'
-dev_manifest_path = operating_manifest_dir + 'cuts_DEV.jsonl.gz'
-fixed_text_path = operating_manifest_dir + 'text.fix'
-fixed_manifest_path = operating_manifest_dir + 'cuts_L_fixed.jsonl.gz'
-fixed_dev_manifest_path = operating_manifest_dir + 'cuts_DEV_fixed.jsonl.gz'
-verify_dev_manifest_path = operating_manifest_dir + 'cuts_DEV_fixed_verify.jsonl.gz'
+def get_parser():
+    parser = argparse.ArgumentParser(
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+
+    parser.add_argument(
+        "--fixed-transcript-path",
+        type=str,
+        default="data/fbank/text.fix",
+        help="""
+        See https://github.com/wenet-e2e/WenetSpeech/discussions/54
+        wget -nc https://huggingface.co/datasets/yuekai/wenetspeech_paraformer_fixed_transcript/resolve/main/text.fix
+        """,
+    )
+
+    parser.add_argument(
+        "--manifest-dir",
+        type=str,
+        default="data/fbank/",
+        help="Directory to store the manifest files",
+    )
+
+    parser.add_argument(
+        "--training-subset",
+        type=str,
+        default="L",
+        help="The training subset for wenetspeech.",
+    )
+
+    return parser
 
 def load_fixed_text(fixed_text_path):
     """
-    See https://github.com/wenet-e2e/WenetSpeech/discussions/54
-    wget -nc https://huggingface.co/datasets/yuekai/wenetspeech_paraformer_fixed_transcript/resolve/main/text.fix
     fixed text format
     X0000016287_92761015_S00001 我是徐涛
     X0000016287_92761015_S00002 狄更斯的PICK WEEK PAPERS斯
@@ -27,47 +49,63 @@ def load_fixed_text(fixed_text_path):
 
 def fix_manifest(manifest, fixed_text_dict, fixed_manifest_path):
     fixed_cutset_list = []
-    for cut in manifest:
+    for i, cut in enumerate(manifest):
+        if i % 10000 == 0:
+            logging.info(f'Processing cut {i}, len(fixed_cutset_list)={len(fixed_cutset_list)}')
         cut_id_orgin = cut.id
         if cut_id_orgin.endswith('_sp0.9'):
             cut_id = cut_id_orgin[:-6]
         elif cut_id_orgin.endswith('_sp1.1'):
             cut_id = cut_id_orgin[:-6]
-            print(f'cut_id_orgin {cut_id_orgin} cut_id {cut_id}')
         else:
             cut_id = cut_id_orgin
         if cut_id in fixed_text_dict:
+            if len(cut.supervisions) > 1:
+                print(cut)
+                print(233333333333333)
+                exit()
             assert len(cut.supervisions) == 1, f'cut {cut_id} has {len(cut.supervisions)} supervisions'
             if cut.supervisions[0].text != fixed_text_dict[cut_id]:
-                print(f'Fixed text for cut {cut_id_orgin} from {cut.supervisions[0].text} to {fixed_text_dict[cut_id]}')
+                logging.info(f'Fixed text for cut {cut_id_orgin} from {cut.supervisions[0].text} to {fixed_text_dict[cut_id]}')
                 cut.supervisions[0].text = fixed_text_dict[cut_id]
             fixed_cutset_list.append(cut)
+    logging.info(f'Fixed {len(fixed_cutset_list)} cuts')
     fixed_cutset = CutSet.from_cuts(fixed_cutset_list)
     fixed_cutset.to_file(fixed_manifest_path)        
 
-if __name__ == '__main__':
-    print(f'Loading manifest from {manifest_path}')
+def main():
+    formatter = "%(asctime)s %(levelname)s [%(filename)s:%(lineno)d] %(message)s"
+    logging.basicConfig(format=formatter, level=logging.INFO)
+
+    parser = get_parser()
+    args = parser.parse_args()
+    logging.info(vars(args))
+
+    operating_manifest_dir = args.manifest_dir
+    manifest_path = operating_manifest_dir + f'cuts_{args.training_subset}.jsonl.gz'
+    dev_manifest_path = operating_manifest_dir + 'cuts_DEV.jsonl.gz'
+    fixed_text_path = operating_manifest_dir + 'text.fix'
+    fixed_manifest_path = operating_manifest_dir + f'cuts_{args.training_subset}_fixed.jsonl.gz'
+    fixed_dev_manifest_path = operating_manifest_dir + 'cuts_DEV_fixed.jsonl.gz'
+
+    logging.info(f'Loading manifest from {manifest_path}')
     cuts_manifest = load_manifest_lazy(manifest_path)
-    print(f'Loading dev manifest from {dev_manifest_path}')
+    logging.info(f'Loading dev manifest from {dev_manifest_path}')
     cuts_dev_manifest = load_manifest_lazy(dev_manifest_path)
+
     fixed_text_dict = load_fixed_text(fixed_text_path)
+    logging.info(f'Loaded {len(fixed_text_dict)} fixed texts')
 
-
-    print(f'Loaded {len(fixed_text_dict)} fixed texts')
     fix_manifest(cuts_dev_manifest, fixed_text_dict, fixed_dev_manifest_path)
-    print(f'Fixed dev manifest saved to {fixed_dev_manifest_path}')
+    logging.info(f'Fixed dev manifest saved to {fixed_dev_manifest_path}')
     fix_manifest(cuts_manifest, fixed_text_dict, fixed_manifest_path)
-    print(f'Fixed manifest saved to {fixed_manifest_path}')
+    logging.info(f'Fixed manifest saved to {fixed_manifest_path}')
 
-
-    paths = [fixed_manifest_path, fixed_dev_manifest_path]
-    for path in paths:
-        print(f"Starting display the statistics for {path}")
-        cuts = load_manifest_lazy(path)
-        cuts.describe()
-
-    
+    # tmp
     cuts_dev_manifest = load_manifest_lazy(fixed_dev_manifest_path)
     fixed_text_dict = load_fixed_text(fixed_text_path)
     fix_manifest(cuts_dev_manifest, fixed_text_dict, verify_dev_manifest_path)
-    print(f'Fixed dev manifest saved to {verify_dev_manifest_path}')
+    logging.info(f'Fixed dev manifest saved to {verify_dev_manifest_path}')
+
+if __name__ == "__main__":
+    main()
