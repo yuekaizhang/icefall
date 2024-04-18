@@ -1,4 +1,5 @@
 import logging
+import argparse
 from lhotse import CutSet, load_manifest_lazy
 
 def get_parser():
