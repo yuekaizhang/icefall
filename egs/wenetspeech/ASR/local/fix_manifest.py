@@ -32,8 +32,9 @@ def load_fixed_text(fixed_text_path):
 def fix_manifest(manifest, fixed_text_dict, fixed_manifest_path):
     fixed_cutset_list = []
     for cut in manifest:
-        cut_id = cut.recording_id
+        cut_id = cut.id
         if cut_id in fixed_text_dict:
+            assert len(cut.supervisions) == 1, f'cut {cut_id} has {len(cut.supervisions)} supervisions'
             if cut.supervisions[0].text != fixed_text_dict[cut_id]:
                 print(f'Fixed text for cut {cut_id} from {cut.supervisions[0].text} to {fixed_text_dict[cut_id]}')
                 cut.supervisions[0].text = fixed_text_dict[cut_id]
@@ -52,6 +53,7 @@ if __name__ == '__main__':
     print(f'Fixed dev manifest saved to {fixed_dev_manifest_path}')
     fix_manifest(cuts_manifest, fixed_text_dict, fixed_manifest_path)
     print(f'Fixed manifest saved to {fixed_manifest_path}')
+
 
     paths = [fixed_manifest_path, fixed_dev_manifest_path]
     for path in paths:
