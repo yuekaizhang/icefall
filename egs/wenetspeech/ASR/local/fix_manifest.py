@@ -43,20 +43,27 @@ def fix_manifest(manifest, fixed_text_dict, fixed_manifest_path):
     fixed_cutset.to_file(fixed_manifest_path)        
 
 if __name__ == '__main__':
-    print(f'Loading manifest from {manifest_path}')
-    cuts_manifest = load_manifest_lazy(manifest_path)
-    print(f'Loading dev manifest from {dev_manifest_path}')
-    cuts_dev_manifest = load_manifest_lazy(dev_manifest_path)
+    # print(f'Loading manifest from {manifest_path}')
+    # cuts_manifest = load_manifest_lazy(manifest_path)
+    # print(f'Loading dev manifest from {dev_manifest_path}')
+    # cuts_dev_manifest = load_manifest_lazy(dev_manifest_path)
+    # fixed_text_dict = load_fixed_text(fixed_text_path)
+
+
+    # print(f'Loaded {len(fixed_text_dict)} fixed texts')
+    # fix_manifest(cuts_dev_manifest, fixed_text_dict, fixed_dev_manifest_path)
+    # print(f'Fixed dev manifest saved to {fixed_dev_manifest_path}')
+    # fix_manifest(cuts_manifest, fixed_text_dict, fixed_manifest_path)
+    # print(f'Fixed manifest saved to {fixed_manifest_path}')
+
+
+    # paths = [fixed_manifest_path, fixed_dev_manifest_path]
+    # for path in paths:
+    #     print(f"Starting display the statistics for {path}")
+    #     cuts = load_manifest_lazy(path)
+    #     cuts.describe()
+
+    
+    cuts_dev_manifest = load_manifest_lazy(fixed_dev_manifest_path)
     fixed_text_dict = load_fixed_text(fixed_text_path)
-    print(f'Loaded {len(fixed_text_dict)} fixed texts')
     fix_manifest(cuts_dev_manifest, fixed_text_dict, fixed_dev_manifest_path)
-    print(f'Fixed dev manifest saved to {fixed_dev_manifest_path}')
-    fix_manifest(cuts_manifest, fixed_text_dict, fixed_manifest_path)
-    print(f'Fixed manifest saved to {fixed_manifest_path}')
-
-
-    paths = [fixed_manifest_path, fixed_dev_manifest_path]
-    for path in paths:
-        print(f"Starting display the statistics for {path}")
-        cuts = load_manifest_lazy(path)
-        cuts.describe()
