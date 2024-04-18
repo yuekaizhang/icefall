@@ -1,4 +1,4 @@
-from lhotse import load_manifest, CutSet
+from lhotse import load_manifest, CutSet, load_manifest_lazy
 
 operating_manifest_dir = '/workspace/icefall_zh/egs/wenetspeech/ASR/data/fbank/'
 manifest_path = operating_manifest_dir + 'cuts_L.jsonl.gz'
