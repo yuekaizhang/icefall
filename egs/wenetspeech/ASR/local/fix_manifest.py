@@ -13,13 +13,13 @@ def load_fixed_text(fixed_text_path):
     wget -nc https://huggingface.co/datasets/yuekai/wenetspeech_paraformer_fixed_transcript/resolve/main/text.fix
     fixed text format
     X0000016287_92761015_S00001 我是徐涛
-    X0000016287_92761015_S00002 声动活泼
+    X0000016287_92761015_S00002 狄更斯的PICK WEEK PAPERS斯
     load into a dict
     """
     fixed_text_dict = {}
     with open(fixed_text_path, 'r') as f:
         for line in f:
-            cut_id, text = line.strip().split(' ')
+            cut_id, text = line.strip().split(' ', 1)
             fixed_text_dict[cut_id] = text
             # add speed perturbation
             cut_id_sp_short = cut_id + '_sp0.9'
