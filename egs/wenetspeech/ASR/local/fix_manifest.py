@@ -47,32 +47,30 @@ def load_fixed_text(fixed_text_path):
             fixed_text_dict[cut_id] = text
     return fixed_text_dict
 
-
 def fix_manifest(manifest, fixed_text_dict, fixed_manifest_path):
-    fixed_cutset_list = []
-    for i, cut in enumerate(manifest):
-        if i % 10000 == 0:
-            logging.info(f'Processing cut {i}, len(fixed_cutset_list)={len(fixed_cutset_list)}')
-        cut_id_orgin = cut.id
-        if cut_id_orgin.endswith('_sp0.9'):
-            cut_id = cut_id_orgin[:-6]
-        elif cut_id_orgin.endswith('_sp1.1'):
-            cut_id = cut_id_orgin[:-6]
-        else:
-            cut_id = cut_id_orgin
-        if cut_id in fixed_text_dict:
-            if len(cut.supervisions) > 1:
-                print(cut)
-                print(233333333333333)
-                exit()
-            assert len(cut.supervisions) == 1, f'cut {cut_id} has {len(cut.supervisions)} supervisions'
-            if cut.supervisions[0].text != fixed_text_dict[cut_id]:
-                logging.info(f'Fixed text for cut {cut_id_orgin} from {cut.supervisions[0].text} to {fixed_text_dict[cut_id]}')
-                cut.supervisions[0].text = fixed_text_dict[cut_id]
-            fixed_cutset_list.append(cut)
-    logging.info(f'Fixed {len(fixed_cutset_list)} cuts')
-    fixed_cutset = CutSet.from_cuts(fixed_cutset_list)
-    fixed_cutset.to_file(fixed_manifest_path)        
+    with CutSet.open_writer(fixed_manifest_path) as manifest_writer:
+        fixed_item = 0
+        for i, cut in enumerate(manifest):
+            if i % 10000 == 0:
+                logging.info(f'Processing cut {i}, fixed {fixed_item}')
+            cut_id_orgin = cut.id
+            if cut_id_orgin.endswith('_sp0.9'):
+                cut_id = cut_id_orgin[:-6]
+            elif cut_id_orgin.endswith('_sp1.1'):
+                cut_id = cut_id_orgin[:-6]
+            else:
+                cut_id = cut_id_orgin
+            if cut_id in fixed_text_dict:
+                if len(cut.supervisions) > 1:
+                    print(cut)
+                    print(233333333333333)
+                    exit()
+                assert len(cut.supervisions) == 1, f'cut {cut_id} has {len(cut.supervisions)} supervisions'
+                if cut.supervisions[0].text != fixed_text_dict[cut_id]:
+                    logging.info(f'Fixed text for cut {cut_id_orgin} from {cut.supervisions[0].text} to {fixed_text_dict[cut_id]}')
+                    cut.supervisions[0].text = fixed_text_dict[cut_id]
+                fixed_item += 1
+                manifest_writer.write(cut)     
 
 def main():
     formatter = "%(asctime)s %(levelname)s [%(filename)s:%(lineno)d] %(message)s"
@@ -99,14 +97,18 @@ def main():
 
     fix_manifest(cuts_dev_manifest, fixed_text_dict, fixed_dev_manifest_path)
     logging.info(f'Fixed dev manifest saved to {fixed_dev_manifest_path}')
-    fix_manifest(cuts_manifest, fixed_text_dict, fixed_manifest_path)
-    logging.info(f'Fixed manifest saved to {fixed_manifest_path}')
 
     # tmp
+    verify_dev_manifest_path = operating_manifest_dir + 'cuts_DEV_fixed_verify.jsonl.gz'
     cuts_dev_manifest = load_manifest_lazy(fixed_dev_manifest_path)
     fixed_text_dict = load_fixed_text(fixed_text_path)
     fix_manifest(cuts_dev_manifest, fixed_text_dict, verify_dev_manifest_path)
     logging.info(f'Fixed dev manifest saved to {verify_dev_manifest_path}')
+
+    fix_manifest(cuts_manifest, fixed_text_dict, fixed_manifest_path)
+    logging.info(f'Fixed manifest saved to {fixed_manifest_path}')
+
+
 
 if __name__ == "__main__":
     main()
