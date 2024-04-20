@@ -66,6 +66,7 @@ from torch.nn.functional import pad as pad_tensor
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
 from whisper_encoder_forward_monkey_patch import replace_whisper_encoder_forward
+from whisper_decoder_forward_monkey_patch import replace_whisper_decoder_forward
 
 from icefall import diagnostics
 from icefall.checkpoint import load_checkpoint, remove_checkpoints
@@ -230,6 +231,13 @@ def get_parser():
         type=str2bool,
         default=True,
         help="Whether to use half precision training.",
+    )
+
+    parser.add_argument(
+        "--use-distill-whisper",
+        type=str2bool,
+        default=False,
+        help="Whether to use architecture of distill whisper.",
     )
 
     parser = deepspeed.add_config_arguments(parser)
@@ -759,6 +767,8 @@ def run(rank, world_size, args):
     logging.info("About to create model")
 
     replace_whisper_encoder_forward()
+    if params.use_distill_whisper:
+        replace_whisper_decoder_forward()
     model = whisper.load_model(params.model_name, "cpu")
     del model.alignment_heads
 

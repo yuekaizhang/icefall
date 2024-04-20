@@ -58,6 +58,7 @@ from multi_dataset import MultiDataset
 from tn.chinese.normalizer import Normalizer
 from whisper.normalizers import BasicTextNormalizer
 from whisper_encoder_forward_monkey_patch import replace_whisper_encoder_forward
+from whisper_decoder_forward_monkey_patch import replace_whisper_decoder_forward
 from zhconv import convert
 
 from icefall.checkpoint import average_checkpoints_with_averaged_model, load_checkpoint
@@ -224,6 +225,13 @@ def get_parser():
         type=str2bool,
         default=True,
         help="replace whisper encoder forward method to remove input length restriction",
+    )
+
+    parser.add_argument(
+        "--use-distill-whisper",
+        type=str2bool,
+        default=False,
+        help="Whether to use architecture of distill whisper.",
     )
 
     return parser
@@ -430,6 +438,8 @@ def main():
 
     if params.remove_whisper_encoder_input_length_restriction:
         replace_whisper_encoder_forward()
+    if params.use_distill_whisper:
+        replace_whisper_decoder_forward()
     model = whisper.load_model(params.model_name, "cpu")
     if params.epoch > 0:
         if params.avg > 1:
