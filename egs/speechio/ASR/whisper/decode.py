@@ -481,7 +481,7 @@ def main():
     args.return_cuts = True
 
     data_module = AsrDataModule(args)
-    multi_dataset = MultiDataset(args.manifest_dir, args.start_index, args.end_index)
+    multi_dataset = MultiDataset(args.manifest_dir, "", args.start_index, args.end_index)
 
     def remove_long_utt(c: Cut):
         # Keep only utterances with duration in 30 seconds

@@ -271,10 +271,11 @@ class MultiDataset:
         )
 
         return {
-            "aishell-2_test": aishell2_test_cuts,
-            "aishell-4": aishell4_test_cuts,
-            "magicdata_test": magicdata_test_cuts,
-            "kespeech-asr_test": kespeech_test_cuts,
+            # "aishell-2_test": aishell2_test_cuts,
+            # "aishell-4": aishell4_test_cuts,
+            # "magicdata_test": magicdata_test_cuts,
+            # "kespeech-asr_test": kespeech_test_cuts,
+            "wenetspeech-meeting_test": wenetspeech_test_meeting_cuts,
         }
 
         # return {
