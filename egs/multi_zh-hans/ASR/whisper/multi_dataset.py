@@ -33,10 +33,6 @@ class MultiDataset:
             It is expected to contain the following files:
             - aishell_cuts_train.jsonl.gz
             - aishell2_cuts_train.jsonl.gz
-            - aishell4_cuts_train_L.jsonl.gz
-            - aishell4_cuts_train_M.jsonl.gz
-            - aishell4_cuts_train_S.jsonl.gz
-            - alimeeting-far_cuts_train.jsonl.gz
             - magicdata_cuts_train.jsonl.gz
             - primewords_cuts_train.jsonl.gz
             - stcmds_cuts_train.jsonl.gz
@@ -68,17 +64,17 @@ class MultiDataset:
             self.fbank_dir / "aishell2_cuts_train.jsonl.gz"
         )
 
-        # AISHELL-4
-        logging.info("Loading Aishell-4 in lazy mode")
-        aishell_4_L_cuts = load_manifest_lazy(
-            self.fbank_dir / "aishell4_cuts_train_L.jsonl.gz"
-        )
-        aishell_4_M_cuts = load_manifest_lazy(
-            self.fbank_dir / "aishell4_cuts_train_M.jsonl.gz"
-        )
-        aishell_4_S_cuts = load_manifest_lazy(
-            self.fbank_dir / "aishell4_cuts_train_S.jsonl.gz"
-        )
+        # # AISHELL-4
+        # logging.info("Loading Aishell-4 in lazy mode")
+        # aishell_4_L_cuts = load_manifest_lazy(
+        #     self.fbank_dir / "aishell4_cuts_train_L.jsonl.gz"
+        # )
+        # aishell_4_M_cuts = load_manifest_lazy(
+        #     self.fbank_dir / "aishell4_cuts_train_M.jsonl.gz"
+        # )
+        # aishell_4_S_cuts = load_manifest_lazy(
+        #     self.fbank_dir / "aishell4_cuts_train_S.jsonl.gz"
+        # )
 
         # ST-CMDS
         logging.info("Loading ST-CMDS in lazy mode")
@@ -96,11 +92,11 @@ class MultiDataset:
             self.fbank_dir / "magicdata_cuts_train.jsonl.gz"
         )
 
-        # Ali-Meeting
-        logging.info("Loading Ali-Meeting in lazy mode")
-        alimeeting_cuts = load_manifest_lazy(
-            self.fbank_dir / "alimeeting-far_cuts_train.jsonl.gz"
-        )
+        # # Ali-Meeting
+        # logging.info("Loading Ali-Meeting in lazy mode")
+        # alimeeting_cuts = load_manifest_lazy(
+        #     self.fbank_dir / "alimeeting-far_cuts_train.jsonl.gz"
+        # )
 
         # WeNetSpeech
         logging.info("Loading WeNetSpeech in lazy mode")
@@ -121,13 +117,9 @@ class MultiDataset:
             thchs_30_cuts,
             aishell_cuts,
             aishell_2_cuts,
-            aishell_4_L_cuts,
-            aishell_4_M_cuts,
-            aishell_4_S_cuts,
             stcmds_cuts,
             primewords_cuts,
             magicdata_cuts,
-            alimeeting_cuts,
             wenetspeech_L_cuts,
             kespeech_1_cuts,
             kespeech_2_cuts,
@@ -135,13 +127,9 @@ class MultiDataset:
                 len(thchs_30_cuts),
                 len(aishell_cuts),
                 len(aishell_2_cuts),
-                len(aishell_4_L_cuts),
-                len(aishell_4_M_cuts),
-                len(aishell_4_S_cuts),
                 len(stcmds_cuts),
                 len(primewords_cuts),
                 len(magicdata_cuts),
-                len(alimeeting_cuts),
                 len(wenetspeech_L_cuts),
                 len(kespeech_1_cuts),
                 len(kespeech_2_cuts),
@@ -163,11 +151,11 @@ class MultiDataset:
             self.fbank_dir / "aishell2_cuts_dev.jsonl.gz"
         )
 
-        # Ali-Meeting
-        logging.info("Loading Ali-Meeting DEV set in lazy mode")
-        alimeeting_dev_cuts = load_manifest_lazy(
-            self.fbank_dir / "alimeeting-far_cuts_eval.jsonl.gz"
-        )
+        # # Ali-Meeting
+        # logging.info("Loading Ali-Meeting DEV set in lazy mode")
+        # alimeeting_dev_cuts = load_manifest_lazy(
+        #     self.fbank_dir / "alimeeting-far_cuts_eval.jsonl.gz"
+        # )
 
         # MagicData
         logging.info("Loading MagicData DEV set in lazy mode")
@@ -194,7 +182,6 @@ class MultiDataset:
         # return [
         #         aishell_dev_cuts,
         #         aishell2_dev_cuts,
-        #         alimeeting_dev_cuts,
         #         magicdata_dev_cuts,
         #         kespeech_dev_phase1_cuts,
         #         kespeech_dev_phase2_cuts,
@@ -222,20 +209,20 @@ class MultiDataset:
             self.fbank_dir / "aishell2_cuts_dev.jsonl.gz"
         )
 
-        # AISHELL-4
-        logging.info("Loading Aishell-4 TEST set in lazy mode")
-        aishell4_test_cuts = load_manifest_lazy(
-            self.fbank_dir / "aishell4_cuts_test.jsonl.gz"
-        )
+        # # AISHELL-4
+        # logging.info("Loading Aishell-4 TEST set in lazy mode")
+        # aishell4_test_cuts = load_manifest_lazy(
+        #     self.fbank_dir / "aishell4_cuts_test.jsonl.gz"
+        # )
 
-        # Ali-Meeting
-        logging.info("Loading Ali-Meeting set in lazy mode")
-        alimeeting_test_cuts = load_manifest_lazy(
-            self.fbank_dir / "alimeeting-far_cuts_test.jsonl.gz"
-        )
-        alimeeting_eval_cuts = load_manifest_lazy(
-            self.fbank_dir / "alimeeting-far_cuts_eval.jsonl.gz"
-        )
+        # # Ali-Meeting
+        # logging.info("Loading Ali-Meeting set in lazy mode")
+        # alimeeting_test_cuts = load_manifest_lazy(
+        #     self.fbank_dir / "alimeeting-far_cuts_test.jsonl.gz"
+        # )
+        # alimeeting_eval_cuts = load_manifest_lazy(
+        #     self.fbank_dir / "alimeeting-far_cuts_eval.jsonl.gz"
+        # )
 
         # MagicData
         logging.info("Loading MagicData set in lazy mode")
@@ -271,21 +258,14 @@ class MultiDataset:
         )
 
         return {
-            # "aishell-2_test": aishell2_test_cuts,
-            # "aishell-4": aishell4_test_cuts,
-            # "magicdata_test": magicdata_test_cuts,
-            # "kespeech-asr_test": kespeech_test_cuts,
             "wenetspeech-meeting_test": wenetspeech_test_meeting_cuts,
         }
 
         # return {
-        #     "alimeeting_test": alimeeting_test_cuts,
-        #     "alimeeting_eval": alimeeting_eval_cuts,
         #     "aishell_test": aishell_test_cuts,
         #     "aishell_dev": aishell_dev_cuts,
         #     "aishell-2_test": aishell2_test_cuts,
         #     "aishell-2_dev": aishell2_dev_cuts,
-        #     "aishell-4": aishell4_test_cuts,
         #     "magicdata_test": magicdata_test_cuts,
         #     "magicdata_dev": magicdata_dev_cuts,
         #     "kespeech-asr_test": kespeech_test_cuts,
