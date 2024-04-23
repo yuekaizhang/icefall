@@ -171,7 +171,7 @@ def verify_manifest_paraformer(manifest_path, fixed_manifest_path, recognizer, s
         recognizer.decode_streams([s])
         results = s.result.text
 
-        wer_results = edit_distance(list(origin_text), list(results.split()))
+        wer_results = edit_distance(list(origin_text), list(results))
         if origin_text != results:
             print(f'{origin_text} - origin_text')
             print(f'{results} - predicted_text')
