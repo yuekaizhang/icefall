@@ -37,15 +37,6 @@ def get_parser():
     )
 
     parser.add_argument(
-        "--save-fixed-transcript-path",
-        type=str,
-        default="data/fbank/text.fix",
-        help="""
-        saved fixed transcript path
-        """,
-    )
-
-    parser.add_argument(
         "--manifest-dir",
         type=str,
         default="data/fbank/",
@@ -150,33 +141,44 @@ def read_wave_multichannel(wave_filename: str, start_time: float = 0.0, duration
 
 def verify_manifest_paraformer(manifest_path, fixed_manifest_path, recognizer, save_fixed_transcript_path):
     cuts_manifest = load_manifest_lazy(manifest_path)
-    fixed_text_dict = {}
-    for i, cut in enumerate(cuts_manifest):
-        if i % 10000 == 0:
-            logging.info(f'Processing cut {i}')
-        cut_id = cut.id
-        if cut_id.endswith('_sp0.9'):
-            cut_id = cut_id[:-6]
-        elif cut_id.endswith('_sp1.1'):
-            cut_id = cut_id[:-6]
-        
-        origin_text = cut.supervisions[0].text
-        origin_text = normalize_text_alimeeting(origin_text)
-        audio_source_path = cut.recording.sources[0].source
-        print(cut)
-        
-        samples, sample_rate = read_wave_multichannel(audio_source_path, cut.start, cut.duration)
-        s = recognizer.create_stream()
-        s.accept_waveform(sample_rate, samples)
-        recognizer.decode_streams([s])
-        results = s.result.text
+    keeped_id_set = {}
+    with open (save_fixed_transcript_path, 'w', encoding='utf-8') as f:
+        for i, cut in enumerate(cuts_manifest):
+            if i % 10000 == 0:
+                logging.info(f'Processing cut {i}')
+            cut_id = cut.id
+            if cut_id.endswith('_sp0.9'):
+                continue
+            elif cut_id.endswith('_sp1.1'):
+                continue
+            origin_text = cut.supervisions[0].text
+            origin_text = normalize_text_alimeeting(origin_text)
+            audio_source_path = cut.recording.sources[0].source
+            
+            samples, sample_rate = read_wave_multichannel(audio_source_path, cut.start, cut.duration)
+            s = recognizer.create_stream()
+            s.accept_waveform(sample_rate, samples)
+            recognizer.decode_streams([s])
+            results = s.result.text
 
-        wer_results = edit_distance(list(origin_text), list(results))
-        if origin_text != results:
-            print(f'{origin_text} - origin_text')
-            print(f'{results} - predicted_text')
-            print(wer_results)
-            input()
+            wer_results = edit_distance(list(origin_text), list(results))
+            if wer_results['err_rate'] < 0.5:
+                keeped_id_set.add(cut_id)
+            else:
+                f.write(f'{cut_id}\t{origin_text}\t{results}\n')
+                logging.info(f'Cut {cut_id} origin text: {origin_text}, result text: {results}, wer: {wer_results["err_rate"]}')
+        
+    with CutSet.open_writer(fixed_manifest_path) as manifest_writer:
+        for i, cut in enumerate(cuts_manifest):
+            if i % 10000 == 0:
+                logging.info(f'Saving cut {i}')
+            cut_id = cut.id
+            if cut_id.endswith('_sp0.9'):
+                cut_id = cut_id[:-6]
+            elif cut_id.endswith('_sp1.1'):
+                cut_id = cut_id[:-6]
+            if cut_id in keeped_id_set:
+                manifest_writer.write(cut)
 
 def main():
     formatter = "%(asctime)s %(levelname)s [%(filename)s:%(lineno)d] %(message)s"
@@ -200,21 +202,17 @@ def main():
     )
     logging.info('Model loaded')
 
-    dev_manifest_path = args.manifest_dir + 'alimeeting-far_cuts_train.jsonl.gz'
-    # dev_manifest_path = args.manifest_dir + 'aishell4_cuts_train_L.jsonl.gz'
-    # dev_manifest_path = args.manifest_dir + 'aishell4_cuts_test.jsonl.gz'
-    # dev_manifest_path = args.manifest_dir + 'kespeech/kespeech-asr_cuts_train_phase1.jsonl.gz'
-    # dev_manifest_path = args.manifest_dir + 'kespeech/kespeech-asr_cuts_train_phase2.jsonl.gz'
-    # dev_manifest_path = args.manifest_dir + 'multi-hans/thchs_30_cuts_train.jsonl.gz' # a little bit
-    # dev_manifest_path = args.manifest_dir + 'multi-hans/stcmds_cuts_train.jsonl.gz'
-    # dev_manifest_path = args.manifest_dir + 'multi-hans/magicdata_cuts_train.jsonl.gz'
-    # dev_manifest_path = args.manifest_dir + 'multi-hans/primewords_cuts_train.jsonl.gz'
-    # dev_manifest_path = args.manifest_dir + 'speechio_cuts_SPEECHIO_ASR_ZH00025.jsonl.gz'
-    fixed_dev_manifest_path = args.manifest_dir + 'test.jsonl.gz'
-    logging.info(f'Loading dev manifest from {dev_manifest_path}')
+    manifest_paths = [args.manifest_dir + 'alimeeting-far_cuts_train.jsonl.gz']
+    manifest_paths.append(args.manifest_dir + 'aishell4_cuts_train_L.jsonl.gz')
+    manifest_paths.append(args.manifest_dir + 'aishell4_cuts_train_M.jsonl.gz')
+    manifest_paths.append(args.manifest_dir + 'aishell4_cuts_train_S.jsonl.gz')
 
-    verify_manifest_paraformer(dev_manifest_path, fixed_dev_manifest_path, recognizer, args.save_fixed_transcript_path)
-    logging.info(f'Fixed dev manifest saved to {fixed_dev_manifest_path}')
+    for manifest_path in manifest_paths:
+        fixed_manifest_path = manifest_path.replace('.jsonl.gz', '_fixed.jsonl.gz')
+        logging.info(f'Loading manifest from {manifest_path}')
+        removed_text_path = manifest_path.replace('.jsonl.gz', '_removed_text.txt')
+        verify_manifest_paraformer(manifest_path, fixed_manifest_path, recognizer, removed_text_path)
+        logging.info(f'Fixed manifest saved to {fixed_manifest_path}')
 
 if __name__ == "__main__":
     main()
