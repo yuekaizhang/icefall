@@ -449,6 +449,41 @@ def compute_loss(
             padded_tensors.append(pad_tensor(tensor, padding, "constant", pad_value))
         return torch.stack([tensor for tensor in padded_tensors], dim=0)
 
+    def normalize_text_alimeeting(text: str, normalize: str = "m2met") -> str:
+        """
+        Text normalization similar to M2MeT challenge baseline.
+        See: https://github.com/yufan-aslp/AliMeeting/blob/main/asr/local/text_normalize.pl
+        """
+        if normalize == "none":
+            return text
+        elif normalize == "m2met":
+            import re
+            text = text.replace(" ", "")
+            text = text.replace("<sil>", "")
+            text = text.replace("<%>", "")
+            text = text.replace("<->", "")
+            text = text.replace("<$>", "")
+            text = text.replace("<#>", "")
+            text = text.replace("<_>", "")
+            text = text.replace("<space>", "")
+            text = text.replace("`", "")
+            text = text.replace("&", "")
+            text = text.replace(",", "")
+            if re.search("[a-zA-Z]", text):
+                text = text.upper()
+            text = text.replace("Ａ", "A")
+            text = text.replace("ａ", "A")
+            text = text.replace("ｂ", "B")
+            text = text.replace("ｃ", "C")
+            text = text.replace("ｋ", "K")
+            text = text.replace("ｔ", "T")
+            text = text.replace("，", "")
+            text = text.replace("丶", "")
+            text = text.replace("。", "")
+            text = text.replace("、", "")
+            text = text.replace("？", "")
+            return text
+
     max_frames = params.max_duration * 1000 // params.frame_shift_ms
     allowed_max_frames = int(max_frames * (1.0 + params.allowed_excess_duration_ratio))
     batch = filter_uneven_sized_batch(batch, allowed_max_frames)
@@ -467,7 +502,7 @@ def compute_loss(
 
     texts = batch["supervisions"]["text"]
     # remove spaces in texts
-    texts = [text.replace(" ", "") for text in texts]
+    texts = [normalize_text_alimeeting(text) for text in texts]
 
     text_tokens_list = [
         list(tokenizer.sot_sequence_including_notimestamps)
