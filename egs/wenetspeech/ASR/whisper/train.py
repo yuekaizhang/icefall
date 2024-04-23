@@ -44,6 +44,7 @@ from pathlib import Path
 from shutil import copyfile
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+import os
 import deepspeed
 import k2
 import optim
@@ -616,7 +617,9 @@ def train_one_epoch(
                         f"{params.exp_dir}/epoch-{params.cur_epoch}-checkpoint-{batch_idx}.pt",
                         tag=f"epoch-{params.cur_epoch}-checkpoint-{batch_idx}",
                     )
-
+                    os.system(
+                        f"rm -rf {params.exp_dir}/epoch-{params.cur_epoch}-checkpoint-{batch_idx}"
+                    )
         try:
             with torch.cuda.amp.autocast(enabled=params.use_fp16):
                 loss, loss_info = compute_loss(
@@ -893,6 +896,7 @@ def run(rank, world_size, args):
                     f"{params.exp_dir}/epoch-{params.cur_epoch}.pt",
                     tag=f"epoch-{params.cur_epoch}",
                 )
+                os.system(f"rm -rf {params.exp_dir}/epoch-{params.cur_epoch}")
         else:
             save_checkpoint(
                 params=params,

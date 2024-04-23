@@ -40,7 +40,7 @@ def get_parser():
     parser.add_argument(
         "--whisper-log-dir",
         type=str,
-        default="./recogs_whisper",
+        default="./recogs_whisper_v1",
         help="The directory to store the whisper logs: e.g. recogs-SPEECHIO_ASR_ZH00014-beam-search-epoch--1-avg-1.txt",
     )
     parser.add_argument(
@@ -52,7 +52,7 @@ def get_parser():
     parser.add_argument(
         "--output-log-dir",
         type=str,
-        default="./results_fusion",
+        default="./results_fusion_v1_deletion_custom_dict",
         help="The directory to store the fusion logs",
     )
     return parser
@@ -123,7 +123,7 @@ def extract_hyp_ref_wavname(filename):
 def get_pair_filenames(
     whisper_log_dir,
     zipformer_log_dir,
-    whisper_suffix="beam-search-epoch-999-avg-1",
+    whisper_suffix="beam-search-epoch-1997-avg-1",
     zipformer_suffix="greedy_search_blank_penalty_2.0-epoch-999-avg-1-context-2-max-sym-per-frame-1-blank-penalty-2.0",
 ):
     results = []
@@ -164,6 +164,29 @@ def fusion_hyps_trust_substituion_insertion(
         hyps_fusion.append(hyp_f)
     return hyps_fusion
 
+def fusion_hyps_trust_substituion_insertion_custom_dict(
+    hyps_whisper, hyps_zipformer, refs, ERR="*", custom_dict=set()
+):
+    """
+    alignment example:
+    [('我', '你'), ('在', '*'), ('任', '任'), ('的', '的'), ('时', '时'), ('候', '候'), ('*', '呢')]
+    left is whisper, right is zipformer
+    for whisper substitution, use left
+    for whisper insertion, use left
+    for whisper deletion, if the deletion is in the custom_dict, use right
+    """
+    hyps_fusion = []
+    for hyp_w, hyp_z, ref in zip(hyps_whisper, hyps_zipformer, refs):
+        ali = kaldialign.align(hyp_w, hyp_z, ERR)
+        hyp_f = ""
+        for a in ali:
+            if a[0] == ERR:
+                if a[1] in custom_dict:
+                    hyp_f += a[1]
+            else:
+                hyp_f += a[0]
+        hyps_fusion.append(hyp_f)
+    return hyps_fusion
 
 def fusion_hyps_trust_substituion(hyps_whisper, hyps_zipformer, refs, ERR="*"):
     """
@@ -199,8 +222,12 @@ def main():
         hyps_whisper, refs, wav_name = extract_hyp_ref_wavname(pair[0])
         hyps_zipformer, _, _ = extract_hyp_ref_wavname(pair[1])
 
-        hyps_fusion = fusion_hyps_trust_substituion_insertion(
-            hyps_whisper, hyps_zipformer, refs
+        # hyps_fusion = fusion_hyps_trust_substituion_insertion(
+        #     hyps_whisper, hyps_zipformer, refs
+        # )
+        custom_set = set(["啊", "儿", "嗯", "呃"])
+        hyps_fusion = fusion_hyps_trust_substituion_insertion_custom_dict(
+            hyps_whisper, hyps_zipformer, refs, custom_dict=custom_set
         )
 
         partition_name = pair[0].split("/")[-1].split("-")[1]

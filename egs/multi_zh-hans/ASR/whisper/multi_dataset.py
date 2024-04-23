@@ -64,17 +64,17 @@ class MultiDataset:
             self.fbank_dir / "aishell2_cuts_train.jsonl.gz"
         )
 
-        # # AISHELL-4
-        # logging.info("Loading Aishell-4 in lazy mode")
-        # aishell_4_L_cuts = load_manifest_lazy(
-        #     self.fbank_dir / "aishell4_cuts_train_L.jsonl.gz"
-        # )
-        # aishell_4_M_cuts = load_manifest_lazy(
-        #     self.fbank_dir / "aishell4_cuts_train_M.jsonl.gz"
-        # )
-        # aishell_4_S_cuts = load_manifest_lazy(
-        #     self.fbank_dir / "aishell4_cuts_train_S.jsonl.gz"
-        # )
+        # AISHELL-4
+        logging.info("Loading Aishell-4 in lazy mode")
+        aishell_4_L_cuts = load_manifest_lazy(
+            self.fbank_dir / "aishell4_cuts_train_L.jsonl.gz"
+        )
+        aishell_4_M_cuts = load_manifest_lazy(
+            self.fbank_dir / "aishell4_cuts_train_M.jsonl.gz"
+        )
+        aishell_4_S_cuts = load_manifest_lazy(
+            self.fbank_dir / "aishell4_cuts_train_S.jsonl.gz"
+        )
 
         # ST-CMDS
         logging.info("Loading ST-CMDS in lazy mode")
@@ -92,11 +92,11 @@ class MultiDataset:
             self.fbank_dir / "magicdata_cuts_train.jsonl.gz"
         )
 
-        # # Ali-Meeting
-        # logging.info("Loading Ali-Meeting in lazy mode")
-        # alimeeting_cuts = load_manifest_lazy(
-        #     self.fbank_dir / "alimeeting-far_cuts_train.jsonl.gz"
-        # )
+        # Ali-Meeting
+        logging.info("Loading Ali-Meeting in lazy mode")
+        alimeeting_cuts = load_manifest_lazy(
+            self.fbank_dir / "alimeeting-far_cuts_train.jsonl.gz"
+        )
 
         # WeNetSpeech
         logging.info("Loading WeNetSpeech in lazy mode")
@@ -117,6 +117,10 @@ class MultiDataset:
             thchs_30_cuts,
             aishell_cuts,
             aishell_2_cuts,
+            aishell_4_L_cuts,
+            aishell_4_M_cuts,
+            aishell_4_S_cuts,
+            alimeeting_cuts,
             stcmds_cuts,
             primewords_cuts,
             magicdata_cuts,
@@ -127,6 +131,10 @@ class MultiDataset:
                 len(thchs_30_cuts),
                 len(aishell_cuts),
                 len(aishell_2_cuts),
+                len(aishell_4_L_cuts),
+                len(aishell_4_M_cuts),
+                len(aishell_4_S_cuts),
+                len(alimeeting_cuts),
                 len(stcmds_cuts),
                 len(primewords_cuts),
                 len(magicdata_cuts),
@@ -249,15 +257,8 @@ class MultiDataset:
             self.fbank_dir / "wenetspeech" / "cuts_DEV_fixed.jsonl.gz"
         )
 
-        # return {
-        #     "wenetspeech-meeting_test": wenetspeech_test_meeting_cuts,
-        # }
-
         return {
             "wenetspeech-meeting_test": wenetspeech_test_meeting_cuts,
-            "ali-meeting_test": alimeeting_test_cuts,
-            "ali-meeting_eval": alimeeting_eval_cuts,
-            "aishell-4_test": aishell4_test_cuts,
         }
 
         # return {
