@@ -246,11 +246,18 @@ class MultiDataset:
             self.fbank_dir / "wenetspeech" / "cuts_TEST_NET.jsonl.gz"
         )
         wenetspeech_dev_cuts = load_manifest_lazy(
-            self.fbank_dir / "wenetspeech" / "cuts_DEV.jsonl.gz"
+            self.fbank_dir / "wenetspeech" / "cuts_DEV_fixed.jsonl.gz"
         )
+
+        # return {
+        #     "wenetspeech-meeting_test": wenetspeech_test_meeting_cuts,
+        # }
 
         return {
             "wenetspeech-meeting_test": wenetspeech_test_meeting_cuts,
+            "ali-meeting_test": alimeeting_test_cuts,
+            "ali-meeting_eval": alimeeting_eval_cuts,
+            "aishell-4_test": aishell4_test_cuts,
         }
 
         # return {
