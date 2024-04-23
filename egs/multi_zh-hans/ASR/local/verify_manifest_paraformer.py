@@ -24,8 +24,8 @@ import soundfile as sf
 
 import re
 import sherpa_onnx
-import kaldialign
 from lhotse import CutSet, load_manifest_lazy
+from kaldialign import edit_distance
 
 """
 wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-paraformer-zh-2023-03-28.tar.bz2
@@ -136,6 +136,9 @@ def read_wave_multichannel(wave_filename: str, start_time: float = 0.0, duration
         # If the file is stereo, we only want the first channel
         if samples.shape[1] > 1:
             samples = samples[:, 0:1]
+
+        # choose the average of all channels
+        # samples = np.mean(samples, axis=1, keepdims=True)
         
         # Normalize the samples to the range [-1, 1] if they aren't already
         if samples.dtype != np.float32 or samples.max() > 1 or samples.min() < -1:
@@ -167,9 +170,12 @@ def verify_manifest_paraformer(manifest_path, fixed_manifest_path, recognizer, s
         s.accept_waveform(sample_rate, samples)
         recognizer.decode_streams([s])
         results = s.result.text
+
+        wer_results = edit_distance(origin_text.split(), results.split())
         if origin_text != results:
             print(f'{origin_text} - origin_text')
             print(f'{results} - predicted_text')
+            print(wer_results)
             input()
 
 def main():
@@ -194,10 +200,10 @@ def main():
     )
     logging.info('Model loaded')
 
-    # dev_manifest_path = args.manifest_dir + 'alimeeting-far_cuts_train.jsonl.gz'
+    dev_manifest_path = args.manifest_dir + 'alimeeting-far_cuts_train.jsonl.gz'
     # dev_manifest_path = args.manifest_dir + 'aishell4_cuts_train_L.jsonl.gz'
     # dev_manifest_path = args.manifest_dir + 'aishell4_cuts_test.jsonl.gz'
-    dev_manifest_path = args.manifest_dir + 'kespeech/kespeech-asr_cuts_train_phase1.jsonl.gz'
+    # dev_manifest_path = args.manifest_dir + 'kespeech/kespeech-asr_cuts_train_phase1.jsonl.gz'
     # dev_manifest_path = args.manifest_dir + 'kespeech/kespeech-asr_cuts_train_phase2.jsonl.gz'
     # dev_manifest_path = args.manifest_dir + 'multi-hans/thchs_30_cuts_train.jsonl.gz' # a little bit
     # dev_manifest_path = args.manifest_dir + 'multi-hans/stcmds_cuts_train.jsonl.gz'
