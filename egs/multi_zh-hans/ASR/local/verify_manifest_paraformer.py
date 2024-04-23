@@ -134,14 +134,12 @@ def read_wave_multichannel(wave_filename: str, start_time: float = 0.0, duration
         # Normalize the samples to the range [-1, 1] if they aren't already
         if samples.dtype != np.float32 or samples.max() > 1 or samples.min() < -1:
             samples = samples / np.iinfo(samples.dtype).max
-
-        print(samples.shape, sample_rate, samples.dtype, type(samples))
         
         return samples, sample_rate
 
 def verify_manifest_paraformer(manifest_path, fixed_manifest_path, recognizer, save_fixed_transcript_path):
     cuts_manifest = load_manifest_lazy(manifest_path)
-    keeped_id_set = {}
+    keeped_id_set = set()
     with open (save_fixed_transcript_path, 'w', encoding='utf-8') as f:
         for i, cut in enumerate(cuts_manifest):
             if i % 10000 == 0:
@@ -202,11 +200,12 @@ def main():
     )
     logging.info('Model loaded')
 
-    manifest_paths = [args.manifest_dir + 'alimeeting-far_cuts_train.jsonl.gz']
+    manifest_paths = []
+    manifest_paths.append(args.manifest_dir + 'aishell4_cuts_train_S.jsonl.gz')
+    manifest_paths.append(args.manifest_dir + 'alimeeting-far_cuts_train.jsonl.gz')
     manifest_paths.append(args.manifest_dir + 'aishell4_cuts_train_L.jsonl.gz')
     manifest_paths.append(args.manifest_dir + 'aishell4_cuts_train_M.jsonl.gz')
-    manifest_paths.append(args.manifest_dir + 'aishell4_cuts_train_S.jsonl.gz')
-
+    
     for manifest_path in manifest_paths:
         fixed_manifest_path = manifest_path.replace('.jsonl.gz', '_fixed.jsonl.gz')
         logging.info(f'Loading manifest from {manifest_path}')
