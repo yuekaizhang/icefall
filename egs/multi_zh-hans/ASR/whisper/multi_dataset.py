@@ -71,13 +71,13 @@ class MultiDataset:
         # AISHELL-4
         logging.info("Loading Aishell-4 in lazy mode")
         aishell_4_L_cuts = load_manifest_lazy(
-            self.fbank_dir / "aishell4_cuts_train_L.jsonl.gz"
+            self.fbank_dir / "aishell4_cuts_train_L_fixed.jsonl.gz"
         )
         aishell_4_M_cuts = load_manifest_lazy(
-            self.fbank_dir / "aishell4_cuts_train_M.jsonl.gz"
+            self.fbank_dir / "aishell4_cuts_train_M_fixed.jsonl.gz"
         )
         aishell_4_S_cuts = load_manifest_lazy(
-            self.fbank_dir / "aishell4_cuts_train_S.jsonl.gz"
+            self.fbank_dir / "aishell4_cuts_train_S_fixed.jsonl.gz"
         )
 
         # ST-CMDS
@@ -99,7 +99,7 @@ class MultiDataset:
         # Ali-Meeting
         logging.info("Loading Ali-Meeting in lazy mode")
         alimeeting_cuts = load_manifest_lazy(
-            self.fbank_dir / "alimeeting-far_cuts_train.jsonl.gz"
+            self.fbank_dir / "alimeeting-far_cuts_train_fixed.jsonl.gz"
         )
 
         # WeNetSpeech
