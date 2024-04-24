@@ -27,6 +27,8 @@ def forward(self, x: Tensor, xa: Tensor, kv_cache: Optional[dict] = None):
 
     # for block in self.blocks:
     #     x = block(x, xa, mask=self.mask, kv_cache=kv_cache)
+    # use architecture from the distill whisper model
+    # see https://github.com/huggingface/distil-whisper
     x = self.blocks[0](x, xa, mask=self.mask, kv_cache=kv_cache)
     x = self.blocks[-1](x, xa, mask=self.mask, kv_cache=kv_cache)
 
