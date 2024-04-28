@@ -96,6 +96,7 @@ class ParaWhisper(torch.nn.Module):
             acoustic_embd, token_num, _, _ = self.cif_predictor(
                 encoder_out, mask=encoder_out_mask, target_label_length=target_lengths.to(encoder_out.device))
             prev_outputs_tokens = prev_outputs_tokens.to(encoder_out.device)
+            target_tokens = target_tokens.to(encoder_out.device)
             acoustic_embd = self._sampler(
                 encoder_out,
                 prev_outputs_tokens,
