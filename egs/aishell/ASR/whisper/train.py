@@ -36,7 +36,7 @@ torchrun --nproc_per_node 8 ./whisper/train.py \
   --model-name medium
 """
 
-
+import os
 import argparse
 import copy
 import logging
@@ -67,7 +67,7 @@ from torch.nn.functional import pad as pad_tensor
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
 from whisper_encoder_forward_monkey_patch import replace_whisper_encoder_forward
-
+from substituate_labels import generate_errors, load_chinese_chars
 from icefall import diagnostics
 from icefall.checkpoint import load_checkpoint, remove_checkpoints
 from icefall.checkpoint import save_checkpoint as save_checkpoint_impl
@@ -222,6 +222,20 @@ def get_parser():
         type=str2bool,
         default=True,
         help="Whether to use half precision training.",
+    )
+
+    parser.add_argument(
+        "--substituated-dict-path",
+        type=str,
+        default="whisper/aishell_tokens.txt",
+        help="The path to the substituated dict.",
+    )
+
+    parser.add_argument(
+        "--enable-nar-training",
+        type=str2bool,
+        default=True,
+        help="Should NAR training enabled or not",
     )
 
     parser = deepspeed.add_config_arguments(parser)
@@ -394,6 +408,7 @@ def compute_loss(
     model: Union[nn.Module, DDP],
     batch: dict,
     is_training: bool,
+    enable_nar_training: bool = True,
 ) -> Tuple[Tensor, MetricsTracker]:
     """
     Compute the loss for the given batch.
@@ -453,27 +468,87 @@ def compute_loss(
     # remove spaces in texts
     texts = [text.replace(" ", "") for text in texts]
 
-    text_tokens_list = [
-        list(tokenizer.sot_sequence_including_notimestamps)
-        + tokenizer.encode(text)
-        + [tokenizer.eot]
-        for text in texts
-    ]
-    # convert it to torch tensor
-    text_tokens_list = [
-        torch.LongTensor(text_tokens) for text_tokens in text_tokens_list
-    ]
+    if params.enable_nar_training:
+        # valid loss may be random, since the generated text is not the same every time
+        extra_space = 0.3
+        texts_substituted = generate_errors(texts, substitution_rate=0.5, chinese_chars=params.substituated_dict)
 
-    # 50256 is the index of <pad> for all whisper models
-    prev_outputs_tokens = _batch_tensors(
-        [tokens[:-1] for tokens in text_tokens_list], pad_value=50256
-    )
-    target_tokens = _batch_tensors(
-        [tokens[1:] for tokens in text_tokens_list], pad_value=50256
-    )
-    target_lengths = torch.LongTensor(
-        [tokens.shape[0] - 1 for tokens in text_tokens_list]
-    )
+        text_tokens_list_substituated = [
+            tokenizer.encode(text)
+            for text in texts_substituted
+        ]
+        # make extra spaces for input sequences
+        text_tokens_list_substituated = [
+            text_tokens + [50256] * int(len(text_tokens) * extra_space)
+            for text_tokens in text_tokens_list_substituated
+        ]
+        # save the length of the changed text tokens
+        text_tokens_substituted_pad_len = [
+            len(text_tokens) for text_tokens in text_tokens_list_substituated
+        ]
+        text_tokens_list_substituated = [
+            list(tokenizer.sot_sequence_including_notimestamps)
+            + text_tokens
+            for text_tokens in text_tokens_list_substituated
+        ]        
+
+        text_tokens_list = [
+            tokenizer.encode(text)
+            for text in texts
+        ]
+        # pad with eos if the length is less than text_tokens_substituted_pad_len
+        text_tokens_list = [
+            list(tokenizer.sot_sequence_including_notimestamps)[1:]
+            + text_tokens + [tokenizer.eot] * (text_tokens_substituted_pad_len[i] - len(text_tokens) + 1)
+            for i, text_tokens in enumerate(text_tokens_list)
+        ]
+
+        # revise text_tokens_list_subsituated to the same length as text_tokens_list
+        # below is just for insurance, expect the length of elements in text_tokens_list_substituated is the same as text_tokens_list already
+        text_tokens_list_substituated = [
+            text_tokens + [50256] * (len(text_tokens_list[i]) - len(text_tokens))
+            for i, text_tokens in enumerate(text_tokens_list_substituated)
+        ]
+
+        # convert it to torch tensor
+        text_tokens_list_substituated = [
+            torch.LongTensor(text_tokens) for text_tokens in text_tokens_list_substituated
+        ]
+        text_tokens_list = [
+            torch.LongTensor(text_tokens) for text_tokens in text_tokens_list
+        ]
+
+        prev_outputs_tokens = _batch_tensors(
+            [tokens for tokens in text_tokens_list_substituated], pad_value=50256
+        )
+        target_tokens = _batch_tensors(
+            [tokens for tokens in text_tokens_list], pad_value=50256
+        )
+        if True:
+            print("text", texts)
+            print("texts_substituted", texts_substituted)
+            print("text_tokens_list_substituated", text_tokens_list_substituated)
+            print("text_tokens_list", text_tokens_list)
+
+    else:
+        text_tokens_list = [
+            list(tokenizer.sot_sequence_including_notimestamps)
+            + tokenizer.encode(text)
+            + [tokenizer.eot]
+            for text in texts
+        ]
+        # convert it to torch tensor
+        text_tokens_list = [
+            torch.LongTensor(text_tokens) for text_tokens in text_tokens_list
+        ]
+        # 50256 is the index of <pad> for all whisper models
+        prev_outputs_tokens = _batch_tensors(
+            [tokens[:-1] for tokens in text_tokens_list], pad_value=50256
+        )
+
+        target_tokens = _batch_tensors(
+            [tokens[1:] for tokens in text_tokens_list], pad_value=50256
+        )
 
     decoder_criterion = LabelSmoothingLoss(
         ignore_index=50256, label_smoothing=0.1, reduction="sum"
@@ -727,6 +802,8 @@ def run(rank, world_size, args):
     """
     params = get_params()
     params.update(vars(args))
+    if params.enable_nar_training:
+        params.substituated_dict = load_chinese_chars(params.substituated_dict_path)
 
     fix_random_seed(params.seed)
 
@@ -865,6 +942,7 @@ def run(rank, world_size, args):
                     f"{params.exp_dir}/epoch-{params.cur_epoch}.pt",
                     tag=f"epoch-{params.cur_epoch}",
                 )
+                os.system(f"rm -rf {params.exp_dir}/epoch-{params.cur_epoch}")
         else:
             save_checkpoint(
                 params=params,

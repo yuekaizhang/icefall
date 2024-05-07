@@ -19,10 +19,11 @@
 Usage:
 
 #fine-tuning with deepspeed zero stage 1
-torchrun --nproc-per-node 8 ./whisper/train.py \
+torchrun --nproc_per_node 8 ./whisper/train.py \
   --max-duration 200 \
   --exp-dir whisper/exp_large_v2 \
   --model-name large-v2 \
+  --manifest-dir data/fbank_whisper \
   --deepspeed \
   --deepspeed_config ./whisper/ds_config_zero1.json
 
@@ -30,11 +31,12 @@ torchrun --nproc-per-node 8 ./whisper/train.py \
 torchrun --nproc_per_node 8 ./whisper/train.py \
   --max-duration 200 \
   --exp-dir whisper/exp_medium \
+  --manifest-dir data/fbank_whisper \
   --base-lr 1e-5 \
   --model-name medium
 """
 
-
+import os
 import argparse
 import copy
 import logging
@@ -44,7 +46,6 @@ from pathlib import Path
 from shutil import copyfile
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-import os
 import deepspeed
 import k2
 import optim
@@ -52,7 +53,7 @@ import torch
 import torch.multiprocessing as mp
 import torch.nn as nn
 import whisper
-from asr_datamodule import WenetSpeechAsrDataModule
+from asr_datamodule import AishellAsrDataModule
 from deepspeed.utils.zero_to_fp32 import convert_zero_checkpoint_to_fp32_state_dict
 from label_smoothing import LabelSmoothingLoss
 from lhotse import CutSet, load_manifest
@@ -66,7 +67,8 @@ from torch.nn.functional import pad as pad_tensor
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
 from whisper_encoder_forward_monkey_patch import replace_whisper_encoder_forward
-
+from whisper_decoder_forward_monkey_patch import replace_whisper_decoder_forward
+from model import ParaWhisper
 from icefall import diagnostics
 from icefall.checkpoint import load_checkpoint, remove_checkpoints
 from icefall.checkpoint import save_checkpoint as save_checkpoint_impl
@@ -81,6 +83,7 @@ from icefall.utils import (
     setup_logger,
     str2bool,
 )
+from whisper_tokens import load_new_tokens_dict_list, encode_with_dict
 
 LRSchedulerType = Union[torch.optim.lr_scheduler._LRScheduler, optim.LRScheduler]
 
@@ -109,7 +112,7 @@ def get_parser():
     parser.add_argument(
         "--num-epochs",
         type=int,
-        default=10,
+        default=30,
         help="Number of epochs to train.",
     )
 
@@ -146,7 +149,7 @@ def get_parser():
         "--model-name",
         type=str,
         default="large-v2",
-        choices=["large-v2", "large-v3", "medium", "small", "base", "tiny"],
+        choices=["large-v2", "large-v3", "medium", "small", "tiny"],
         help="""The model name to use.
         """,
     )
@@ -223,6 +226,33 @@ def get_parser():
         help="Whether to use half precision training.",
     )
 
+    parser.add_argument(
+        "--custom-token-path",
+        type=str,
+        default="parawhisper/aishell_tokens_wenet.txt",
+        help="The path to the custom dict.",
+    )
+
+    parser.add_argument(
+        "--method",
+        type=str,
+        default="cif",
+        help="""The method to use for training.
+        cif: Cif only
+        ctc_only: CTC only
+        cif_ar: Cif and AR
+        cif_ar_distill_feature: Cif, AR and distillation"""
+    )
+
+    parser.add_argument(
+        "--pretrained-model-path",
+        type=str,
+        default=None,
+        help="""The path to the pretrained model if it is not None. Training will
+        start from this model. e.g. ./wenetspeech/ASR/whisper/exp_large_v2/epoch-4-avg-3.pt
+        """,
+    )
+
     parser = deepspeed.add_config_arguments(parser)
 
     return parser
@@ -263,7 +293,7 @@ def get_params() -> AttributeDict:
             "batch_idx_train": 0,
             "log_interval": 50,
             "reset_interval": 200,
-            "valid_interval": 10000,
+            "valid_interval": 5000,
             "env_info": get_env_info(),
         }
     )
@@ -393,6 +423,7 @@ def compute_loss(
     model: Union[nn.Module, DDP],
     batch: dict,
     is_training: bool,
+    enable_nar_training: bool = True,
 ) -> Tuple[Tensor, MetricsTracker]:
     """
     Compute the loss for the given batch.
@@ -452,42 +483,123 @@ def compute_loss(
     # remove spaces in texts
     texts = [text.replace(" ", "") for text in texts]
 
+
+    # text_tokens_list = [
+    #     list(tokenizer.sot_sequence_including_notimestamps)[1:]
+    #     + tokenizer.encode(text)
+    #     + [tokenizer.eot]
+    #     for text in texts
+    # ]
+    # text_tokens_list = [
+    #     model.tokenizer.encode(text)
+    #     + [model.tokenizer.eot]
+    #     for text in texts
+    # ]
     text_tokens_list = [
-        list(tokenizer.sot_sequence_including_notimestamps)
-        + tokenizer.encode(text)
+        tokenizer.encode(text)
         + [tokenizer.eot]
         for text in texts
     ]
+    # text_tokens_list = [
+    #     encode_with_dict(text, model.custom_dict)
+    #     + [tokenizer.eot]
+    #     for text in texts
+    # ]
+
+    # prev_outputs_tokens_list = [[model.tokenizer.sot] + text_tokens[:-1] for text_tokens in text_tokens_list]
+    prev_outputs_tokens_list = [[tokenizer.sot] + text_tokens[:-1] for text_tokens in text_tokens_list]    
+    prev_outputs_tokens_list = [
+        torch.LongTensor(text_tokens) for text_tokens in prev_outputs_tokens_list
+    ]
+    # prev_outputs_tokens = _batch_tensors(
+    #     [tokens for tokens in prev_outputs_tokens_list], pad_value=model.tokenizer.pad
+    # )
+    prev_outputs_tokens = _batch_tensors(
+        [tokens for tokens in prev_outputs_tokens_list], pad_value=50256
+    )
     # convert it to torch tensor
     text_tokens_list = [
         torch.LongTensor(text_tokens) for text_tokens in text_tokens_list
     ]
-
     # 50256 is the index of <pad> for all whisper models
-    prev_outputs_tokens = _batch_tensors(
-        [tokens[:-1] for tokens in text_tokens_list], pad_value=50256
-    )
+    # prev_outputs_tokens = _batch_tensors(
+    #     [tokens[:-1] for tokens in text_tokens_list], pad_value=50256
+    # )
+    target_lengths = torch.LongTensor([len(tokens) for tokens in text_tokens_list])
+    # target_tokens = _batch_tensors(
+    #     [tokens for tokens in text_tokens_list], pad_value=model.tokenizer.pad
+    # )
     target_tokens = _batch_tensors(
-        [tokens[1:] for tokens in text_tokens_list], pad_value=50256
-    )
-    target_lengths = torch.LongTensor(
-        [tokens.shape[0] - 1 for tokens in text_tokens_list]
+        [tokens for tokens in text_tokens_list], pad_value=50256
     )
 
-    decoder_criterion = LabelSmoothingLoss(
-        ignore_index=50256, label_smoothing=0.1, reduction="sum"
-    )
+    if params.method == "cif_ar":
+        loss, loss_decoder, loss_quantity, loss_ar_decoder, loss_distill = model.forward_nar_ar(feature, feature_lens, prev_outputs_tokens, target_tokens, target_lengths, is_training)
+    elif params.method == "cif":
+        loss, loss_decoder, loss_quantity = model(feature, feature_lens, prev_outputs_tokens, target_tokens, target_lengths, is_training)
+    elif params.method == "cif_ar_distill_feature":
+        loss, loss_decoder, loss_quantity, loss_ar_decoder, loss_distill = model.forward_nar_ar_feature(feature, feature_lens, prev_outputs_tokens, target_tokens, target_lengths, is_training)
+    elif params.method == "cif_ar_distill_embedding":
+        loss, loss_decoder, loss_quantity, loss_ar_decoder, loss_distill = model.forward_nar_ar_embedding(feature, feature_lens, prev_outputs_tokens, target_tokens, target_lengths, is_training)
+    elif params.method == "cif_ar_causal":
+        loss, loss_decoder, loss_quantity, loss_ar_decoder, loss_distill = model.forward_nar_ar_causal(feature, feature_lens, prev_outputs_tokens, target_tokens, target_lengths, is_training)
+    elif params.method == "ctc_only":
+        loss, loss_decoder, loss_quantity = model.forward_ctc_only(feature, feature_lens, prev_outputs_tokens, target_tokens, target_lengths, is_training)
+    elif params.method == "mask_predict":
+        # input bos, 0, 1, 2, 3, pad_id
+        # output 0, 1, 2, 3, eos, pad_id
 
-    # ignore the first 3 tokens, which are always <|lang_id|>, <|transcibe|>, <|notimestampes|>
-    ignore_prefix_size = 3
-    with torch.set_grad_enabled(is_training):
-        encoder_out = model.encoder(feature)
-        text_logits = model.decoder(prev_outputs_tokens.to(device), encoder_out)
-        text_logits = text_logits[:, ignore_prefix_size:, :]
-        target_tokens = target_tokens[:, ignore_prefix_size:]
-        loss = decoder_criterion(text_logits, target_tokens.to(device))
+        # mask next token prediction
+        # input    bos, 0,  1,        pad_id, 3,         pad_id
+        # output    0,  1,  2(loss),     3,   eos(loss), pad_id
+        # changed output to compute loss
+        #          pad, pad, 2,         pad,  eos,       pad  
 
-    assert loss.requires_grad == is_training
+        # mask current token prediction
+        # input,   0,   1, pad_id,  3,   pad_id,   pad_id
+        # output,  0,   1,  2(loss) 3,   eos(loss), pad_id
+        # changed output to compute loss
+        #          pad, pad, 2,     pad, eos,      pad
+        text_tokens_list = [
+            tokenizer.encode(text)
+            for text in texts
+        ]
+        text_tokens_tensor_list = [
+            torch.LongTensor(text_tokens) for text_tokens in text_tokens_list
+        ] 
+        # random mask 20% tokens in text_tokens_list, and get them indices
+        mask_indices = []
+        for i, text_tokens in enumerate(text_tokens_list):
+            mask_indices.append(
+                torch.LongTensor(random.sample(range(0, len(text_tokens)), int(len(text_tokens) * 0.8)))
+            )
+        # mask prev_outputs_tokens according to mask_indices
+        prev_tokens_tensor_list = [
+            torch.LongTensor(text_tokens) for text_tokens in text_tokens_list
+        ]
+        target_tokens_tensor_list = [
+            torch.LongTensor(text_tokens) for text_tokens in text_tokens_list
+        ] 
+        for i, mask_index in enumerate(mask_indices):
+            prev_tokens_tensor_list[i][mask_index] = 50256
+            # for target tokens, we only keep tokens according to mask_index, and mask other tokens
+            mask_target_index_tensor = torch.zeros_like(text_tokens_tensor_list[i])
+            mask_target_index_tensor[mask_index] = 1
+            target_tokens_tensor_list[i] = text_tokens_tensor_list[i] * mask_target_index_tensor + 50256 * (1 - mask_target_index_tensor)
+            # prev_outputs_tokens add bos, target_tokens add eos
+            prev_tokens_tensor_list[i] = torch.cat([torch.LongTensor([tokenizer.sot]), prev_tokens_tensor_list[i]], dim=0)
+            target_tokens_tensor_list[i] = torch.cat([target_tokens_tensor_list[i], torch.LongTensor([tokenizer.eot])], dim=0)
+
+        prev_outputs_tokens = _batch_tensors(
+            [tokens for tokens in prev_tokens_tensor_list], pad_value=50256
+        )
+        target_tokens = _batch_tensors(
+            [tokens for tokens in target_tokens_tensor_list], pad_value=50256
+        )
+        #Wprint(prev_outputs_tokens[:2], target_tokens[:2], text_tokens_tensor_list[:2])
+        loss, loss_decoder = model.forward_nar_mask(feature, feature_lens, prev_outputs_tokens, target_tokens, target_lengths, is_training)
+    else:
+        raise NotImplementedError
 
     info = MetricsTracker()
     with warnings.catch_warnings():
@@ -496,6 +608,12 @@ def compute_loss(
 
     # Note: We use reduction=sum while computing the loss.
     info["loss"] = loss.detach().cpu().item()
+    info["loss_decoder"] = loss_decoder.detach().cpu().item()
+    if 'cif' in params.method:
+        info["loss_quantity"] = loss_quantity.detach().cpu().item()
+    if 'ar' in params.method:
+        info["loss_ar_decoder"] = loss_ar_decoder.detach().cpu().item()
+        info["loss_distill"] = loss_distill.detach().cpu().item()
 
     return loss, info
 
@@ -605,21 +723,7 @@ def train_one_epoch(
                 valid_info.write_summary(
                     tb_writer, "train/valid_", params.batch_idx_train
                 )
-            if params.deepspeed:
-                model.save_checkpoint(
-                    save_dir=params.exp_dir,
-                    tag=f"epoch-{params.cur_epoch}-checkpoint-{batch_idx}",
-                    client_state={},
-                )
-                if rank == 0:
-                    convert_zero_checkpoint_to_fp32_state_dict(
-                        params.exp_dir,
-                        f"{params.exp_dir}/epoch-{params.cur_epoch}-checkpoint-{batch_idx}.pt",
-                        tag=f"epoch-{params.cur_epoch}-checkpoint-{batch_idx}",
-                    )
-                    os.system(
-                        f"rm -rf {params.exp_dir}/epoch-{params.cur_epoch}-checkpoint-{batch_idx}"
-                    )
+
         try:
             with torch.cuda.amp.autocast(enabled=params.use_fp16):
                 loss, loss_info = compute_loss(
@@ -749,11 +853,10 @@ def run(rank, world_size, args):
     logging.info("About to create model")
 
     replace_whisper_encoder_forward()
+    replace_whisper_decoder_forward()
     model = whisper.load_model(params.model_name, "cpu")
     del model.alignment_heads
-    num_param = sum([p.numel() for p in model.parameters()])
-    logging.info(f"Number of model parameters: {num_param}")
-
+    
     tokenizer = whisper.tokenizer.get_tokenizer(
         model.is_multilingual,
         num_languages=model.num_languages,
@@ -761,15 +864,46 @@ def run(rank, world_size, args):
         task="transcribe",
     )
 
+    model = ParaWhisper(model, params.custom_token_path)
+
+    # check the exp_dir, list the epoch-xxx.pt files and start from the last one plus 1
+    if params.start_epoch == 1:
+        largest_epoch = 0
+        for f in os.listdir(params.exp_dir):
+            if f.startswith("epoch-") and f.endswith(".pt"):
+                epoch = int(f.split("-")[1].split(".")[0])
+                if epoch < params.num_epochs:
+                    largest_epoch = max(largest_epoch, epoch)
+        params.start_epoch = largest_epoch + 1
+
+    filename = None
+    if params.pretrained_model_path:
+        filename = params.pretrained_model_path
+    # priority: start_epoch > pretrained_model_path
+    if params.start_epoch > 1:
+        filename = params.exp_dir / f"epoch-{params.start_epoch-1}.pt"
+    if filename:
+        logging.info(f"Loading model from {filename}")
+        checkpoint = torch.load(filename, map_location="cpu")
+        if "model" not in checkpoint:
+            model.load_state_dict(checkpoint, strict=False)
+        else:
+            load_checkpoint(filename, model)
+
+    num_param = sum([p.numel() for p in model.parameters()])
+    logging.info(f"Number of model parameters: {num_param}")
+
+
     model_avg: Optional[nn.Module] = None
     if rank == 0:
         # model_avg is only used with rank 0
         model_avg = copy.deepcopy(model).to(torch.float64)
 
     assert params.start_epoch > 0, params.start_epoch
-    checkpoints = load_checkpoint_if_available(
-        params=params, model=model, model_avg=model_avg
-    )
+    # checkpoints = load_checkpoint_if_available(
+    #     params=params, model=model, model_avg=model_avg
+    # )
+    checkpoints = None
 
     if torch.cuda.is_available():
         device = torch.device("cuda", rank)
@@ -806,14 +940,14 @@ def run(rank, world_size, args):
 
     if params.print_diagnostics:
         opts = diagnostics.TensorDiagnosticOptions(
-            512
+            2**22
         )  # allow 4 megabytes per sub-module
         diagnostic = diagnostics.attach_diagnostics(model, opts)
 
     if params.inf_check:
         register_inf_check_hooks(model)
 
-    wenetspeech = WenetSpeechAsrDataModule(args)
+    aishell = AishellAsrDataModule(args)
 
     if params.start_batch > 0 and checkpoints and "sampler" in checkpoints:
         # We only load the sampler's state dict when it loads a checkpoint
@@ -822,26 +956,8 @@ def run(rank, world_size, args):
     else:
         sampler_state_dict = None
 
-    def remove_short_and_long_utt(c: Cut):
-        # Keep only utterances with duration between 1 second and 15 seconds
-        #
-        # Caution: There is a reason to select 15.0 here. Please see
-        # ../local/display_manifest_statistics.py
-        #
-        # You should use ../local/display_manifest_statistics.py to get
-        # an utterance duration distribution for your dataset to select
-        # the threshold
-        if c.duration < 1.0 or c.duration > 15.0:
-            # logging.warning(
-            #    f"Exclude cut with ID {c.id} from training. Duration: {c.duration}"
-            # )
-            return False
-        return True
-
-    train_cuts = wenetspeech.train_cuts()
-    train_cuts = train_cuts.filter(remove_short_and_long_utt)
-    train_dl = wenetspeech.train_dataloaders(train_cuts)
-    valid_dl = wenetspeech.valid_dataloaders(wenetspeech.valid_cuts())
+    train_dl = aishell.train_dataloaders(aishell.train_cuts())
+    valid_dl = aishell.valid_dataloaders(aishell.valid_cuts())
 
     scaler = GradScaler(enabled=params.use_fp16, init_scale=1.0)
     if checkpoints and "grad_scaler" in checkpoints:
@@ -943,7 +1059,7 @@ def display_and_save_batch(
 
 def main():
     parser = get_parser()
-    WenetSpeechAsrDataModule.add_arguments(parser)
+    AishellAsrDataModule.add_arguments(parser)
     args = parser.parse_args()
     args.exp_dir = Path(args.exp_dir)
 

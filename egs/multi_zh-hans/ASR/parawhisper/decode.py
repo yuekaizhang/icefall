@@ -28,17 +28,18 @@ python3 ./whisper/decode.py \
   --exp-dir whisper/exp_large_v2 \
   --model-name large-v2 \
   --epoch 999 --avg 1 \
+  --manifest-dir data/fbank_whisper \
   --beam-size 10 --max-duration 50
 
 # Command for decoding using pretrained models (before fine-tuning):
 
 python3 ./whisper/decode.py \
-  --exp-dir whisper/exp_large_v2_pretrained \
+  --exp-dir whisper/exp_large_v2 \
   --model-name large-v2 \
   --epoch -1 --avg 1 \
-  --start-index 14 --end-index 15 \
+  --manifest-dir data/fbank_whisper \
   --remove-whisper-encoder-input-length-restriction False \
-  --beam-size 1 --max-duration 50
+  --beam-size 10 --max-duration 50
 
 """
 
@@ -60,6 +61,7 @@ from tn.chinese.normalizer import Normalizer
 from whisper.normalizers import BasicTextNormalizer
 from whisper_encoder_forward_monkey_patch import replace_whisper_encoder_forward
 from whisper_decoder_forward_monkey_patch import replace_whisper_decoder_forward
+from model import ParaWhisper
 from zhconv import convert
 
 from icefall.checkpoint import average_checkpoints_with_averaged_model, load_checkpoint
@@ -191,10 +193,12 @@ def get_parser():
     parser.add_argument(
         "--method",
         type=str,
-        default="beam-search",
+        default="cif",
         help="""Decoding method.
         Supported values are:
-          - beam-search
+          - cif
+          - ar
+          - cif-oracle
         """,
     )
 
@@ -216,7 +220,7 @@ def get_parser():
         "--model-name",
         type=str,
         default="large-v2",
-        choices=["large-v2", "large-v3", "medium", "small", "base", "tiny"],
+        choices=["large-v2", "large-v3", "medium", "small", "tiny"],
         help="""The model name to use.
         """,
     )
@@ -229,10 +233,17 @@ def get_parser():
     )
 
     parser.add_argument(
-        "--use-distill-whisper",
+        "--custom-token-path",
+        type=str,
+        default="parawhisper/aishell_tokens_whisper.txt",
+        help="The path to the custom dict.",
+    )
+
+    parser.add_argument(
+        "--ctc-only",
         type=str2bool,
         default=False,
-        help="Whether to use architecture of distill whisper.",
+        help="Whether to use CTC only.",
     )
 
     return parser
@@ -246,6 +257,40 @@ def get_params() -> AttributeDict:
     )
     return params
 
+def normalize_text_alimeeting(text: str, normalize: str = "m2met") -> str:
+    """
+    Text normalization similar to M2MeT challenge baseline.
+    See: https://github.com/yufan-aslp/AliMeeting/blob/main/asr/local/text_normalize.pl
+    """
+    if normalize == "none":
+        return text
+    elif normalize == "m2met":
+        import re
+        text = text.replace(" ", "")
+        text = text.replace("<sil>", "")
+        text = text.replace("<%>", "")
+        text = text.replace("<->", "")
+        text = text.replace("<$>", "")
+        text = text.replace("<#>", "")
+        text = text.replace("<_>", "")
+        text = text.replace("<space>", "")
+        text = text.replace("`", "")
+        text = text.replace("&", "")
+        text = text.replace(",", "")
+        if re.search("[a-zA-Z]", text):
+            text = text.upper()
+        text = text.replace("Ａ", "A")
+        text = text.replace("ａ", "A")
+        text = text.replace("ｂ", "B")
+        text = text.replace("ｃ", "C")
+        text = text.replace("ｋ", "K")
+        text = text.replace("ｔ", "T")
+        text = text.replace("，", "")
+        text = text.replace("丶", "")
+        text = text.replace("。", "")
+        text = text.replace("、", "")
+        text = text.replace("？", "")
+        return text
 
 def decode_one_batch(
     params: AttributeDict,
@@ -289,14 +334,77 @@ def decode_one_batch(
     supervisions = batch["supervisions"]
     feature_len = supervisions["num_frames"]
     feature_len = feature_len.to(device, dtype=dtype)
-    results = model.decode(feature, params.decoding_options)
-    hyps = [result.text for result in results]
+
+
+    texts = batch["supervisions"]["text"]
+    # remove spaces in texts
+    texts = [normalize_text_alimeeting(text) for text in texts]
+    text_tokens_list = [
+        model.tokenizer.encode(text)
+        + [model.tokenizer.eot]
+        for text in texts
+    ]
+    if 'oracle' in params.method:
+        text_tokens_tensor = [
+            torch.LongTensor(text_tokens) for text_tokens in text_tokens_list
+        ]
+        target_lengths = torch.LongTensor([len(tokens) for tokens in text_tokens_tensor])
+    else:
+        target_lengths = None
+    
+    if not params.ctc_only:
+        if params.method == "ar":
+            results = model.whisper_model.decode(feature, params.decoding_options)
+            hyps = [result.text for result in results]
+            pred_tokens = [result.tokens for result in results]
+        # elif params.method == "diagnostic":
+        #     from typing import Any
+        #     from torch.nn.functional import pad as pad_tensor
+
+        #     def _batch_tensors(tensors: List[torch.Tensor], pad_value: Any) -> torch.Tensor:
+        #         padding_size = max(tensor.shape[0] for tensor in tensors)
+        #         dims = len(tensors[0].shape)
+        #         padded_tensors = []
+        #         for tensor in tensors:
+        #             padding = [0] * 2 * dims
+        #             padding[-1] = padding_size - tensor.shape[0]
+        #             padded_tensors.append(pad_tensor(tensor, padding, "constant", pad_value))
+        #         return torch.stack([tensor for tensor in padded_tensors], dim=0)
+        #     input_text_tokens_list = [
+        #         [model.tokenizer.sot] + 
+        #         model.tokenizer.encode(text)
+        #         for text in texts
+        #     ]
+        #     # convert it to torch tensor
+        #     input_text_tokens_list = [
+        #         torch.LongTensor(text_tokens) for text_tokens in input_text_tokens_list
+        #     ]
+        #     prev_outputs_tokens = _batch_tensors(
+        #         [tokens for tokens in input_text_tokens_list], pad_value=model.pad_id
+        #     )
+        #     hyps, pred_tokens = model.decode_diagnostic(feature, feature_len, prev_outputs_tokens, target_lengths)
+        # elif params.method == "mask_predict_oracle":
+        #     hyps, pred_tokens = model.decode_mask_predict(feature, feature_len, target_lengths)
+        #     pred_tokens = [tokens[:tokens.index(50257)] if 50257 in tokens else tokens for tokens in pred_tokens]
+        # elif params.method == "mask_predict_oracle_iterative":
+        #     hyps, pred_tokens = model.decode_mask_predict_iterative(feature, feature_len, target_lengths)
+        #     pred_tokens = [tokens[:tokens.index(50257)] if 50257 in tokens else tokens for tokens in pred_tokens]          
+        else:
+            assert 'cif' in params.method
+            # hyps, pred_tokens = model.decode_cif_rescore(feature, feature_len, target_lengths)
+            hyps, pred_tokens = model.decode(feature, feature_len, target_lengths)
+            # remove all tokens after the first 50257 in the pred_tokens
+            pred_tokens = [tokens[:tokens.index(50257)] if 50257 in tokens else tokens for tokens in pred_tokens]
+    else:
+        hyps, pred_tokens = model.ctc_decode(feature, feature_len)
+
+    # hyps = [result.text for result in results]
 
     hyps = remove_punctuation(hyps)
     hyps = to_simple(hyps)
     hyps = [params.normalizer.normalize(hyp) for hyp in hyps]
     print(hyps)
-    return {"beam-search": hyps}
+    return {params.method: hyps}, pred_tokens, text_tokens_list
 
 
 def decode_dataset(
@@ -316,6 +424,7 @@ def decode_dataset(
     Returns:
         Return a dict, whose key may be "beam-search".
     """
+
     results = []
 
     num_cuts = 0
@@ -326,20 +435,26 @@ def decode_dataset(
         num_batches = "?"
 
     results = defaultdict(list)
+    all_preds, all_labels, all_cut_ids = [], [], []
     for batch_idx, batch in enumerate(dl):
         texts = batch["supervisions"]["text"]
         cut_ids = [cut.id for cut in batch["supervisions"]["cut"]]
 
-        hyps_dict = decode_one_batch(
+        hyps_dict, pred_tokens, label_tokens = decode_one_batch(
             params=params,
             model=model,
             batch=batch,
         )
+        all_preds.extend(pred_tokens)
+        for label_token in label_tokens:
+            all_labels.append(label_token[:-1])
+        all_cut_ids.extend(cut_ids)
 
         for lm_scale, hyps in hyps_dict.items():
             this_batch = []
             assert len(hyps) == len(texts)
             for cut_id, hyp_words, ref_text in zip(cut_ids, hyps, texts):
+                ref_text = normalize_text_alimeeting(ref_text)
                 ref_words = ref_text.split()
                 this_batch.append((cut_id, ref_words, hyp_words))
 
@@ -351,7 +466,7 @@ def decode_dataset(
             batch_str = f"{batch_idx}/{num_batches}"
 
             logging.info(f"batch {batch_str}, cuts processed until now is {num_cuts}")
-    return results
+    return results, all_preds, all_labels, all_cut_ids
 
 
 def save_results(
@@ -366,7 +481,7 @@ def save_results(
         recog_path = (
             params.exp_dir / f"recogs-{test_set_name}-{key}-{params.suffix}.txt"
         )
-        results = sorted(results)
+        # results = sorted(results)
         store_transcripts(filename=recog_path, texts=results)
         if enable_log:
             logging.info(f"The transcripts are stored in {recog_path}")
@@ -403,6 +518,65 @@ def save_results(
         note = ""
     logging.info(s)
 
+def save_token_results(
+    params: AttributeDict,
+    test_set_name: str,
+    all_preds: List[List[int]],
+    all_labels: List[List[int]],
+    all_cut_ids: List[str],
+):
+    enable_log = True
+    test_set_wers = dict()
+    results_char = []
+    for cut_id, pred, label in zip(all_cut_ids, all_preds, all_labels):
+        # convert from int to str
+        pred = [str(p) for p in pred]
+        label = [str(l) for l in label]
+        results_char.append((cut_id, label, pred))
+    errs_filename = (
+        params.exp_dir / f"errs-{test_set_name}-token-{params.method}-{params.suffix}.txt"
+    )
+    with open(errs_filename, "w") as f:
+        wer = write_error_stats(
+            f, f"{test_set_name}-token", results_char, enable_log=enable_log
+        )
+        test_set_wers["token"] = wer
+
+    if enable_log:
+        logging.info("Wrote detailed error stats to {}".format(errs_filename))
+
+    test_set_wers = sorted(test_set_wers.items(), key=lambda x: x[1])
+    errs_info = params.exp_dir / f"cer-summary-{test_set_name}-token-{params.method}-{params.suffix}.txt"
+    # calculate the sentence level token num accuracy
+    # e.g. len(pred) = 10, len(label) = 10, then the total_sentence_num += 1
+    total_sentence_num = 0
+    total_tolerance_num = 0
+    for pred, label in zip(all_preds, all_labels):
+        if len(pred) - len(label) > 1 or len(label) - len(pred) > 1:
+            print(23333333333333333333333333333, len(pred), len(label))
+        elif len(pred) - len(label) == 1 or len(label) - len(pred) == 1:
+            total_tolerance_num += 1
+        if len(pred) == len(label):
+            total_sentence_num += 1
+    sentence_accuracy = total_sentence_num / len(all_preds)
+    tolerance_sentence_accuracy = (total_sentence_num + total_tolerance_num) / len(all_preds)
+    logging.info(f"Total sentence num: {len(all_preds)}, sentence accuracy: {sentence_accuracy}")
+    logging.info(f"Total sentence num: {len(all_preds)}, sentence accuracy with tolerance: {tolerance_sentence_accuracy}")
+
+    with open(errs_info, "w") as f:
+        print("settings\tCER", file=f)
+        for key, val in test_set_wers:
+            print("{}\t{}".format(key, val), file=f)
+        print(f"Total sentence num: {len(all_preds)}, sentence accuracy: {sentence_accuracy}", file=f)
+
+    s = "\nFor {}, CER of different settings are:\n".format(test_set_name)
+    note = "\tbest for {}".format(test_set_name)
+    for key, val in test_set_wers:
+        s += "{}\t{}{}\n".format(key, val, note)
+        note = ""
+    logging.info(s)
+
+
 
 @torch.no_grad()
 def main():
@@ -437,11 +611,11 @@ def main():
 
     logging.info(f"device: {device}")
 
-    if params.remove_whisper_encoder_input_length_restriction:
-        replace_whisper_encoder_forward()
-    if params.use_distill_whisper:
-        replace_whisper_decoder_forward()
+    # if params.remove_whisper_encoder_input_length_restriction:
+    replace_whisper_encoder_forward()
+    replace_whisper_decoder_forward()
     model = whisper.load_model(params.model_name, "cpu")
+    model = ParaWhisper(model, sampler=False)
     if params.epoch > 0:
         if params.avg > 1:
             start = params.epoch - params.avg
@@ -479,7 +653,7 @@ def main():
                 f"{params.exp_dir}/epoch-{params.epoch}.pt", map_location="cpu"
             )
             if "model" not in checkpoint:
-                model.load_state_dict(checkpoint, strict=True)
+                model.load_state_dict(checkpoint, strict=False)
             else:
                 load_checkpoint(f"{params.exp_dir}/epoch-{params.epoch}.pt", model)
     model.to(device)
@@ -491,7 +665,7 @@ def main():
     args.return_cuts = True
 
     data_module = AsrDataModule(args)
-    multi_dataset = MultiDataset(args.manifest_dir, "", args.start_index, args.end_index)
+    multi_dataset = MultiDataset(args.manifest_dir)
 
     def remove_long_utt(c: Cut):
         # Keep only utterances with duration in 30 seconds
@@ -512,13 +686,13 @@ def main():
     ]
 
     for test_set, test_dl in zip(test_sets, test_dls):
-        results_dict = decode_dataset(
+        results_dict, all_preds, all_labels, all_cut_ids = decode_dataset(
             dl=test_dl,
             params=params,
             model=model,
         )
-
         save_results(params=params, test_set_name=test_set, results_dict=results_dict)
+        save_token_results(params=params, test_set_name=test_set, all_preds=all_preds, all_labels=all_labels, all_cut_ids=all_cut_ids)
 
     logging.info("Done!")
 

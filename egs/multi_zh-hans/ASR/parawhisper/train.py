@@ -19,10 +19,11 @@
 Usage:
 
 #fine-tuning with deepspeed zero stage 1
-torchrun --nproc-per-node 8 ./whisper/train.py \
+torchrun --nproc_per_node 8 ./whisper/train.py \
   --max-duration 200 \
   --exp-dir whisper/exp_large_v2 \
   --model-name large-v2 \
+  --manifest-dir data/fbank_whisper \
   --deepspeed \
   --deepspeed_config ./whisper/ds_config_zero1.json
 
@@ -30,11 +31,12 @@ torchrun --nproc-per-node 8 ./whisper/train.py \
 torchrun --nproc_per_node 8 ./whisper/train.py \
   --max-duration 200 \
   --exp-dir whisper/exp_medium \
+  --manifest-dir data/fbank_whisper \
   --base-lr 1e-5 \
   --model-name medium
 """
 
-
+import os
 import argparse
 import copy
 import logging
@@ -44,7 +46,6 @@ from pathlib import Path
 from shutil import copyfile
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-import os
 import deepspeed
 import k2
 import optim
@@ -52,13 +53,14 @@ import torch
 import torch.multiprocessing as mp
 import torch.nn as nn
 import whisper
-from asr_datamodule import WenetSpeechAsrDataModule
+from asr_datamodule import AsrDataModule
 from deepspeed.utils.zero_to_fp32 import convert_zero_checkpoint_to_fp32_state_dict
 from label_smoothing import LabelSmoothingLoss
 from lhotse import CutSet, load_manifest
 from lhotse.cut import Cut
 from lhotse.dataset.sampling.base import CutSampler
 from lhotse.utils import fix_random_seed
+from multi_dataset import MultiDataset
 from optim import Eden, ScaledAdam
 from torch import Tensor
 from torch.cuda.amp import GradScaler
@@ -66,7 +68,8 @@ from torch.nn.functional import pad as pad_tensor
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
 from whisper_encoder_forward_monkey_patch import replace_whisper_encoder_forward
-
+from whisper_decoder_forward_monkey_patch import replace_whisper_decoder_forward
+from model import ParaWhisper
 from icefall import diagnostics
 from icefall.checkpoint import load_checkpoint, remove_checkpoints
 from icefall.checkpoint import save_checkpoint as save_checkpoint_impl
@@ -109,7 +112,7 @@ def get_parser():
     parser.add_argument(
         "--num-epochs",
         type=int,
-        default=10,
+        default=5,
         help="Number of epochs to train.",
     )
 
@@ -146,7 +149,7 @@ def get_parser():
         "--model-name",
         type=str,
         default="large-v2",
-        choices=["large-v2", "large-v3", "medium", "small", "base", "tiny"],
+        choices=["large-v2", "large-v3", "medium", "small", "tiny"],
         help="""The model name to use.
         """,
     )
@@ -221,6 +224,33 @@ def get_parser():
         type=str2bool,
         default=True,
         help="Whether to use half precision training.",
+    )
+
+    parser.add_argument(
+        "--custom-token-path",
+        type=str,
+        default="parawhisper/aishell_tokens_wenet.txt",
+        help="The path to the custom dict.",
+    )
+
+    parser.add_argument(
+        "--method",
+        type=str,
+        default="cif",
+        help="""The method to use for training.
+        cif: Cif only
+        ctc_only: CTC only
+        cif_ar: Cif and AR
+        cif_ar_distill_feature: Cif, AR and distillation"""
+    )
+
+    parser.add_argument(
+        "--pretrained-model-path",
+        type=str,
+        default=None,
+        help="""The path to the pretrained model if it is not None. Training will
+        start from this model. e.g. ./wenetspeech/ASR/whisper/exp_large_v2/epoch-4-avg-3.pt
+        """,
     )
 
     parser = deepspeed.add_config_arguments(parser)
@@ -393,6 +423,7 @@ def compute_loss(
     model: Union[nn.Module, DDP],
     batch: dict,
     is_training: bool,
+    enable_nar_training: bool = True,
 ) -> Tuple[Tensor, MetricsTracker]:
     """
     Compute the loss for the given batch.
@@ -432,6 +463,41 @@ def compute_loss(
             padded_tensors.append(pad_tensor(tensor, padding, "constant", pad_value))
         return torch.stack([tensor for tensor in padded_tensors], dim=0)
 
+    def normalize_text_alimeeting(text: str, normalize: str = "m2met") -> str:
+        """
+        Text normalization similar to M2MeT challenge baseline.
+        See: https://github.com/yufan-aslp/AliMeeting/blob/main/asr/local/text_normalize.pl
+        """
+        if normalize == "none":
+            return text
+        elif normalize == "m2met":
+            import re
+            text = text.replace(" ", "")
+            text = text.replace("<sil>", "")
+            text = text.replace("<%>", "")
+            text = text.replace("<->", "")
+            text = text.replace("<$>", "")
+            text = text.replace("<#>", "")
+            text = text.replace("<_>", "")
+            text = text.replace("<space>", "")
+            text = text.replace("`", "")
+            text = text.replace("&", "")
+            text = text.replace(",", "")
+            if re.search("[a-zA-Z]", text):
+                text = text.upper()
+            text = text.replace("Ａ", "A")
+            text = text.replace("ａ", "A")
+            text = text.replace("ｂ", "B")
+            text = text.replace("ｃ", "C")
+            text = text.replace("ｋ", "K")
+            text = text.replace("ｔ", "T")
+            text = text.replace("，", "")
+            text = text.replace("丶", "")
+            text = text.replace("。", "")
+            text = text.replace("、", "")
+            text = text.replace("？", "")
+            return text
+
     max_frames = params.max_duration * 1000 // params.frame_shift_ms
     allowed_max_frames = int(max_frames * (1.0 + params.allowed_excess_duration_ratio))
     batch = filter_uneven_sized_batch(batch, allowed_max_frames)
@@ -450,44 +516,41 @@ def compute_loss(
 
     texts = batch["supervisions"]["text"]
     # remove spaces in texts
-    texts = [text.replace(" ", "") for text in texts]
+    texts = [normalize_text_alimeeting(text) for text in texts]
+
+
 
     text_tokens_list = [
-        list(tokenizer.sot_sequence_including_notimestamps)
-        + tokenizer.encode(text)
+        tokenizer.encode(text)
         + [tokenizer.eot]
         for text in texts
     ]
+
+    prev_outputs_tokens_list = [[tokenizer.sot] + text_tokens[:-1] for text_tokens in text_tokens_list]    
+    prev_outputs_tokens_list = [
+        torch.LongTensor(text_tokens) for text_tokens in prev_outputs_tokens_list
+    ]
+
+    prev_outputs_tokens = _batch_tensors(
+        [tokens for tokens in prev_outputs_tokens_list], pad_value=50256
+    )
     # convert it to torch tensor
     text_tokens_list = [
         torch.LongTensor(text_tokens) for text_tokens in text_tokens_list
     ]
 
-    # 50256 is the index of <pad> for all whisper models
-    prev_outputs_tokens = _batch_tensors(
-        [tokens[:-1] for tokens in text_tokens_list], pad_value=50256
-    )
+    target_lengths = torch.LongTensor([len(tokens) for tokens in text_tokens_list])
+
     target_tokens = _batch_tensors(
-        [tokens[1:] for tokens in text_tokens_list], pad_value=50256
-    )
-    target_lengths = torch.LongTensor(
-        [tokens.shape[0] - 1 for tokens in text_tokens_list]
+        [tokens for tokens in text_tokens_list], pad_value=50256
     )
 
-    decoder_criterion = LabelSmoothingLoss(
-        ignore_index=50256, label_smoothing=0.1, reduction="sum"
-    )
-
-    # ignore the first 3 tokens, which are always <|lang_id|>, <|transcibe|>, <|notimestampes|>
-    ignore_prefix_size = 3
-    with torch.set_grad_enabled(is_training):
-        encoder_out = model.encoder(feature)
-        text_logits = model.decoder(prev_outputs_tokens.to(device), encoder_out)
-        text_logits = text_logits[:, ignore_prefix_size:, :]
-        target_tokens = target_tokens[:, ignore_prefix_size:]
-        loss = decoder_criterion(text_logits, target_tokens.to(device))
-
-    assert loss.requires_grad == is_training
+    if params.method == "cif_ar":
+        loss, loss_decoder, loss_quantity, loss_ar_decoder, loss_distill = model.forward_nar_ar(feature, feature_lens, prev_outputs_tokens, target_tokens, target_lengths, is_training)
+    elif params.method == "cif":
+        loss, loss_decoder, loss_quantity = model(feature, feature_lens, prev_outputs_tokens, target_tokens, target_lengths, is_training)
+    else:
+        raise NotImplementedError
 
     info = MetricsTracker()
     with warnings.catch_warnings():
@@ -496,6 +559,12 @@ def compute_loss(
 
     # Note: We use reduction=sum while computing the loss.
     info["loss"] = loss.detach().cpu().item()
+    info["loss_decoder"] = loss_decoder.detach().cpu().item()
+    if 'cif' in params.method:
+        info["loss_quantity"] = loss_quantity.detach().cpu().item()
+    if 'ar' in params.method:
+        info["loss_ar_decoder"] = loss_ar_decoder.detach().cpu().item()
+        info["loss_distill"] = loss_distill.detach().cpu().item()
 
     return loss, info
 
@@ -620,6 +689,7 @@ def train_one_epoch(
                     os.system(
                         f"rm -rf {params.exp_dir}/epoch-{params.cur_epoch}-checkpoint-{batch_idx}"
                     )
+
         try:
             with torch.cuda.amp.autocast(enabled=params.use_fp16):
                 loss, loss_info = compute_loss(
@@ -749,11 +819,10 @@ def run(rank, world_size, args):
     logging.info("About to create model")
 
     replace_whisper_encoder_forward()
+    replace_whisper_decoder_forward()
     model = whisper.load_model(params.model_name, "cpu")
     del model.alignment_heads
-    num_param = sum([p.numel() for p in model.parameters()])
-    logging.info(f"Number of model parameters: {num_param}")
-
+    
     tokenizer = whisper.tokenizer.get_tokenizer(
         model.is_multilingual,
         num_languages=model.num_languages,
@@ -761,15 +830,46 @@ def run(rank, world_size, args):
         task="transcribe",
     )
 
+    model = ParaWhisper(model)
+
+    # check the exp_dir, list the epoch-xxx.pt files and start from the last one plus 1
+    # if params.start_epoch == 1:
+    #     largest_epoch = 0
+    #     for f in os.listdir(params.exp_dir):
+    #         if f.startswith("epoch-") and f.endswith(".pt"):
+    #             epoch = int(f.split("-")[1].split(".")[0])
+    #             if epoch < params.num_epochs:
+    #                 largest_epoch = max(largest_epoch, epoch)
+    #     params.start_epoch = largest_epoch + 1
+
+    filename = None
+    if params.pretrained_model_path:
+        filename = params.pretrained_model_path
+    # priority: start_epoch > pretrained_model_path
+    if params.start_epoch > 1:
+        filename = params.exp_dir / f"epoch-{params.start_epoch-1}.pt"
+    if filename:
+        logging.info(f"Loading model from {filename}")
+        checkpoint = torch.load(filename, map_location="cpu")
+        if "model" not in checkpoint:
+            model.load_state_dict(checkpoint, strict=False)
+        else:
+            load_checkpoint(filename, model)
+
+    num_param = sum([p.numel() for p in model.parameters()])
+    logging.info(f"Number of model parameters: {num_param}")
+
+
     model_avg: Optional[nn.Module] = None
     if rank == 0:
         # model_avg is only used with rank 0
         model_avg = copy.deepcopy(model).to(torch.float64)
 
     assert params.start_epoch > 0, params.start_epoch
-    checkpoints = load_checkpoint_if_available(
-        params=params, model=model, model_avg=model_avg
-    )
+    # checkpoints = load_checkpoint_if_available(
+    #     params=params, model=model, model_avg=model_avg
+    # )
+    checkpoints = None
 
     if torch.cuda.is_available():
         device = torch.device("cuda", rank)
@@ -806,14 +906,15 @@ def run(rank, world_size, args):
 
     if params.print_diagnostics:
         opts = diagnostics.TensorDiagnosticOptions(
-            512
+            2**22
         )  # allow 4 megabytes per sub-module
         diagnostic = diagnostics.attach_diagnostics(model, opts)
 
     if params.inf_check:
         register_inf_check_hooks(model)
 
-    wenetspeech = WenetSpeechAsrDataModule(args)
+    data_module = AsrDataModule(args)
+    multi_dataset = MultiDataset(args.manifest_dir)
 
     if params.start_batch > 0 and checkpoints and "sampler" in checkpoints:
         # We only load the sampler's state dict when it loads a checkpoint
@@ -821,27 +922,31 @@ def run(rank, world_size, args):
         sampler_state_dict = checkpoints["sampler"]
     else:
         sampler_state_dict = None
-
     def remove_short_and_long_utt(c: Cut):
-        # Keep only utterances with duration between 1 second and 15 seconds
+        # Keep only utterances with duration between 1 second and 20 seconds
         #
-        # Caution: There is a reason to select 15.0 here. Please see
+        # Caution: There is a reason to select 20.0 here. Please see
         # ../local/display_manifest_statistics.py
         #
         # You should use ../local/display_manifest_statistics.py to get
         # an utterance duration distribution for your dataset to select
         # the threshold
-        if c.duration < 1.0 or c.duration > 15.0:
+        if c.duration < 1.0 or c.duration > 20.0:
             # logging.warning(
             #    f"Exclude cut with ID {c.id} from training. Duration: {c.duration}"
             # )
             return False
         return True
 
-    train_cuts = wenetspeech.train_cuts()
+    train_cuts = multi_dataset.train_cuts()
     train_cuts = train_cuts.filter(remove_short_and_long_utt)
-    train_dl = wenetspeech.train_dataloaders(train_cuts)
-    valid_dl = wenetspeech.valid_dataloaders(wenetspeech.valid_cuts())
+
+    train_dl = data_module.train_dataloaders(
+        train_cuts, sampler_state_dict=sampler_state_dict
+    )
+
+    valid_cuts = multi_dataset.dev_cuts()
+    valid_dl = data_module.valid_dataloaders(valid_cuts)
 
     scaler = GradScaler(enabled=params.use_fp16, init_scale=1.0)
     if checkpoints and "grad_scaler" in checkpoints:
@@ -943,7 +1048,7 @@ def display_and_save_batch(
 
 def main():
     parser = get_parser()
-    WenetSpeechAsrDataModule.add_arguments(parser)
+    AsrDataModule.add_arguments(parser)
     args = parser.parse_args()
     args.exp_dir = Path(args.exp_dir)
 

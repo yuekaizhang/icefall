@@ -41,17 +41,19 @@ python3 ./whisper/decode.py \
   --beam-size 1 --max-duration 50
 
 """
-
+import time
 import argparse
 import logging
 import re
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
+from torch.nn.functional import pad as pad_tensor
 
 import k2
 import torch
 import torch.nn as nn
+from torch import Tensor
 import whisper
 from asr_datamodule import AsrDataModule
 from lhotse.cut import Cut
@@ -59,7 +61,13 @@ from multi_dataset import MultiDataset
 from tn.chinese.normalizer import Normalizer
 from whisper.normalizers import BasicTextNormalizer
 from whisper_encoder_forward_monkey_patch import replace_whisper_encoder_forward
-from whisper_decoder_forward_monkey_patch import replace_whisper_decoder_forward
+from whisper_decoding_monkey_patch import replace_whisper_decoding
+
+
+from assistant_model_jit import AssistantASRModel
+# from zipformer.train import get_model
+# from zipformer.assistant_model_jit import AssistantASRModel
+
 from zhconv import convert
 
 from icefall.checkpoint import average_checkpoints_with_averaged_model, load_checkpoint
@@ -216,7 +224,7 @@ def get_parser():
         "--model-name",
         type=str,
         default="large-v2",
-        choices=["large-v2", "large-v3", "medium", "small", "base", "tiny"],
+        choices=["large-v2", "large-v3", "medium", "small", "tiny"],
         help="""The model name to use.
         """,
     )
@@ -226,13 +234,6 @@ def get_parser():
         type=str2bool,
         default=True,
         help="replace whisper encoder forward method to remove input length restriction",
-    )
-
-    parser.add_argument(
-        "--use-distill-whisper",
-        type=str2bool,
-        default=False,
-        help="Whether to use architecture of distill whisper.",
     )
 
     return parser
@@ -247,10 +248,83 @@ def get_params() -> AttributeDict:
     return params
 
 
+def verify_assistant_with_whisper(
+    feature: Tensor,
+    params: AttributeDict,
+    model: nn.Module,
+    assistant_model_hyps: List[str],
+    tokenizer: whisper.tokenizer.Tokenizer,
+):
+    """Verify the assistant model.
+
+    Args:
+        params:
+            It is returned by :func:`get_params`.
+        model:
+            The neural model.
+    """
+    def _batch_tensors(tensors: List[Tensor], pad_value: Any) -> Tensor:
+        padding_size = max(tensor.shape[0] for tensor in tensors)
+        dims = len(tensors[0].shape)
+        padded_tensors = []
+        for tensor in tensors:
+            padding = [0] * 2 * dims
+            padding[-1] = padding_size - tensor.shape[0]
+            padded_tensors.append(pad_tensor(tensor, padding, "constant", pad_value))
+        return torch.stack([tensor for tensor in padded_tensors], dim=0)
+
+    device = next(model.parameters()).device
+
+    text_tokens_list = [
+        list(tokenizer.sot_sequence_including_notimestamps)
+        + tokenizer.encode(text)
+        + [tokenizer.eot]
+        for text in assistant_model_hyps
+    ]
+    # convert it to torch tensor
+    text_tokens_list = [
+        torch.LongTensor(text_tokens) for text_tokens in text_tokens_list
+    ]
+
+    # 50256 is the index of <pad> for all whisper models
+    prev_outputs_tokens = _batch_tensors(
+        [tokens[:-1] for tokens in text_tokens_list], pad_value=50256
+    )
+
+    target_tokens = [tokens[1:] for tokens in text_tokens_list]
+
+    indices_whisper_scrath = []
+
+    with torch.no_grad():
+        encoder_out = model.encoder(feature)
+        text_logits = model.decoder(prev_outputs_tokens.to(device), encoder_out)
+
+        pred = text_logits.argmax(dim=-1)
+        pred = pred.tolist()
+
+        for indice, p in enumerate(pred):
+            # remove padding end of text token
+            if tokenizer.eot in p:
+                p = p[: p.index(tokenizer.eot) + 1]
+            if p != target_tokens[indice].tolist():
+                indices_whisper_scrath.append(indice)
+    
+    hyps = assistant_model_hyps
+    if indices_whisper_scrath:
+        results = model.decode(feature[indices_whisper_scrath], params.decoding_options)
+        hyps_part = [result.text for result in results]
+        hyps = [assistant_model_hyps[i] if i not in indices_whisper_scrath else hyps_part.pop(0) for i in range(len(assistant_model_hyps))]
+        print(tokenizer.decode(p), tokenizer.decode(target_tokens[0]), hyps, 23333333333333333333)
+    return hyps
+
+
 def decode_one_batch(
     params: AttributeDict,
     model: nn.Module,
+    assistant_model: nn.Module,
     batch: dict,
+    batch_assistant_model: dict,
+    tokenizer: whisper.tokenizer.Tokenizer,
 ) -> Dict[str, List[List[int]]]:
     """Decode one batch and return the result in a dict. The dict has the
     following format:
@@ -286,23 +360,29 @@ def decode_one_batch(
                 2,
             )
 
-    supervisions = batch["supervisions"]
-    feature_len = supervisions["num_frames"]
-    feature_len = feature_len.to(device, dtype=dtype)
-    results = model.decode(feature, params.decoding_options)
-    hyps = [result.text for result in results]
+    # supervisions = batch["supervisions"]
+    # feature_len = supervisions["num_frames"]
+    # feature_len = feature_len.to(device, dtype=dtype)
+    feature_assistant_model = batch_assistant_model["inputs"].to(device)
+    feature_assistant_model_len = batch_assistant_model["supervisions"]["num_frames"].to(device)
+
+    assistant_model_hyps = assistant_model.decode(feature_assistant_model, feature_assistant_model_len)
+
+    hyps = verify_assistant_with_whisper(feature, params, model, assistant_model_hyps, tokenizer)
 
     hyps = remove_punctuation(hyps)
     hyps = to_simple(hyps)
     hyps = [params.normalizer.normalize(hyp) for hyp in hyps]
-    print(hyps)
+    # print(hyps)
     return {"beam-search": hyps}
 
 
 def decode_dataset(
     dl: torch.utils.data.DataLoader,
+    dl_assistant_model: torch.utils.data.DataLoader,
     params: AttributeDict,
     model: nn.Module,
+    assistant_model: torch.jit.ScriptModule,
 ) -> Dict[str, List[Tuple[str, List[str], List[str]]]]:
     """Decode dataset.
 
@@ -316,6 +396,13 @@ def decode_dataset(
     Returns:
         Return a dict, whose key may be "beam-search".
     """
+    tokenizer = whisper.tokenizer.get_tokenizer(
+        model.is_multilingual,
+        num_languages=model.num_languages,
+        language="zh",
+        task="transcribe",
+    )
+
     results = []
 
     num_cuts = 0
@@ -326,14 +413,17 @@ def decode_dataset(
         num_batches = "?"
 
     results = defaultdict(list)
-    for batch_idx, batch in enumerate(dl):
+    for batch_idx, (batch, batch_assistant_model) in enumerate(zip(dl, dl_assistant_model)):
         texts = batch["supervisions"]["text"]
         cut_ids = [cut.id for cut in batch["supervisions"]["cut"]]
 
         hyps_dict = decode_one_batch(
             params=params,
             model=model,
+            assistant_model=assistant_model,
             batch=batch,
+            batch_assistant_model=batch_assistant_model,
+            tokenizer=tokenizer,
         )
 
         for lm_scale, hyps in hyps_dict.items():
@@ -408,6 +498,7 @@ def save_results(
 def main():
     parser = get_parser()
     AsrDataModule.add_arguments(parser)
+    AssistantASRModel.add_arguments(parser)
     args = parser.parse_args()
     args.exp_dir = Path(args.exp_dir)
 
@@ -439,9 +530,12 @@ def main():
 
     if params.remove_whisper_encoder_input_length_restriction:
         replace_whisper_encoder_forward()
-    if params.use_distill_whisper:
-        replace_whisper_decoder_forward()
+
+    # replace_whisper_decoding()
+
     model = whisper.load_model(params.model_name, "cpu")
+    assistant_model = AssistantASRModel(args)
+
     if params.epoch > 0:
         if params.avg > 1:
             start = params.epoch - params.avg
@@ -478,6 +572,8 @@ def main():
             checkpoint = torch.load(
                 f"{params.exp_dir}/epoch-{params.epoch}.pt", map_location="cpu"
             )
+            # Hack to load the model from offical compatible checkpoints
+            checkpoint = checkpoint["model_state_dict"] if "model_state_dict" in checkpoint else checkpoint
             if "model" not in checkpoint:
                 model.load_state_dict(checkpoint, strict=True)
             else:
@@ -491,19 +587,20 @@ def main():
     args.return_cuts = True
 
     data_module = AsrDataModule(args)
-    multi_dataset = MultiDataset(args.manifest_dir, "", args.start_index, args.end_index)
+    multi_dataset = MultiDataset(args.manifest_dir, args.manifest_assistant_dir, args.start_index, args.end_index)
 
     def remove_long_utt(c: Cut):
         # Keep only utterances with duration in 30 seconds
         #
         if c.duration > 30.0:
-            # logging.warning(
-            #    f"Exclude cut with ID {c.id} from training. Duration: {c.duration}"
-            # )
+            logging.warning(
+               f"Exclude cut with ID {c.id} from whisper inference. Duration: {c.duration}"
+            )
             return False
         return True
 
     test_sets_cuts = multi_dataset.test_cuts()
+    test_assistant_model_cuts = multi_dataset.test_assistant_model_cuts()
 
     test_sets = test_sets_cuts.keys()
     test_dls = [
@@ -511,20 +608,24 @@ def main():
         for cuts_name in test_sets
     ]
 
-    for test_set, test_dl in zip(test_sets, test_dls):
+    test_dl_assistant_models = [
+        data_module.test_dataloaders(test_assistant_model_cuts[cuts_name].filter(remove_long_utt))
+        for cuts_name in test_sets
+    ]
+
+    for test_set, test_dl, test_dl_assistant_model in zip(test_sets, test_dls, test_dl_assistant_models):
         results_dict = decode_dataset(
             dl=test_dl,
+            dl_assistant_model=test_dl_assistant_model,
             params=params,
             model=model,
+            assistant_model=assistant_model,
         )
 
         save_results(params=params, test_set_name=test_set, results_dict=results_dict)
 
     logging.info("Done!")
 
-
-torch.set_num_threads(1)
-torch.set_num_interop_threads(1)
 
 if __name__ == "__main__":
     main()
