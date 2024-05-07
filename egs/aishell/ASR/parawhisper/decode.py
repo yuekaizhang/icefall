@@ -352,6 +352,9 @@ def decode_one_batch(
             pred_tokens = [tokens[:tokens.index(50257)] if 50257 in tokens else tokens for tokens in pred_tokens]
         elif params.method == "mask_predict_oracle_iterative":
             hyps, pred_tokens = model.decode_mask_predict_iterative(feature, feature_len, target_lengths)
+            pred_tokens = [tokens[:tokens.index(50257)] if 50257 in tokens else tokens for tokens in pred_tokens]
+        elif "lexicon" in params.method:
+            hyps, pred_tokens = model.decode_cif_lexicon(feature, feature_len, target_lengths, batch["supervisions"])
             pred_tokens = [tokens[:tokens.index(50257)] if 50257 in tokens else tokens for tokens in pred_tokens]          
         else:
             assert 'cif' in params.method

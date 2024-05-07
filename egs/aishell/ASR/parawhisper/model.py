@@ -27,6 +27,10 @@ from custom_tokens import CustomTokenizer
 from ctc import CTC
 import logging
 
+from icefall.decode import get_lattice
+from icefall.utils import get_texts
+import k2
+
 class ParaWhisper(torch.nn.Module):
     """ Paraformer: Fast and Accurate Parallel Transformer for
         Non-autoregressive End-to-End Speech Recognition
@@ -77,6 +81,12 @@ class ParaWhisper(torch.nn.Module):
         #         encoder_output_size=whisper_model.dims.n_audio_state,
         #         blank_id=50256,
         #     )
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # device = "cpu"
+        self.decoding_graph = k2.Fsa.from_dict(
+            torch.load("/mnt/samsung-t7/yuekai/asr/icefall/egs/speechio/ASR/data/lang_whisper/L.pt", map_location=device)
+        )
+        self.word_table = k2.SymbolTable.from_file("/mnt/samsung-t7/yuekai/asr/icefall/egs/speechio/ASR/data/lang_whisper/words.txt")
 
     def forward(
         self,
@@ -537,6 +547,104 @@ class ParaWhisper(torch.nn.Module):
             s = re.sub(r'<\|.*?\|>', '', hyp)
             # s = remove_non_chinese(s)
             hyps.append(s)
+        return hyps, pred
+
+    def decode_cif_lexicon(
+        self,
+        speech: torch.Tensor,
+        speech_lengths: torch.Tensor,
+        oracle_target_label_length: torch.Tensor=None,
+        supervisions: Dict=None,
+    ) -> Dict[str, torch.Tensor]:
+        def remove_non_chinese(text):
+            # Define a pattern for matching Chinese characters
+            # This pattern matches characters in the range of Unicode Chinese characters
+            pattern = re.compile(r'[^\u4e00-\u9fff]+')
+            
+            # Replace all non-Chinese characters with an empty string
+            filtered_text = pattern.sub('', text)
+            
+            return filtered_text
+            # encoder
+        encoder_out = self.whisper_model.encoder(speech)
+        encoder_out_len = speech_lengths // 2
+        encoder_out_mask = make_non_pad_mask(encoder_out_len, encoder_out.shape[1]).unsqueeze(1)  # (B, 1, T)
+        encoder_out_mask = encoder_out_mask.to(encoder_out.device)
+        # cif predictor
+        # convert encoder_out to torch.float32
+        encoder_out = encoder_out.to(dtype=torch.float32)
+        if oracle_target_label_length is not None:
+            oracle_target_label_length = oracle_target_label_length.to(encoder_out.device)
+
+        # FIX ME yuekai
+        acoustic_embed, token_num, alphas, cif_peaks,= self.cif_predictor(
+            encoder_out, mask=encoder_out_mask, target_label_length=oracle_target_label_length)
+
+        token_num = token_num.floor().to(speech_lengths.dtype)
+
+
+
+        decoder_out = self.whisper_model.decoder.forward_nar(acoustic_embed, encoder_out)
+    
+
+        search_beam = 20
+        output_beam = 8
+        min_active_states = 30
+        max_active_states = 7000
+        subsampling_factor = 2
+        if oracle_target_label_length is not None:
+            supervision_segments = torch.stack(
+                (
+                    supervisions["sequence_idx"],
+                    torch.zeros_like(supervisions["sequence_idx"]),
+                    oracle_target_label_length.to("cpu"),
+                ),
+                1,
+            ).to(torch.int32)
+        else:
+            supervision_segments = torch.stack(
+                (
+                    supervisions["sequence_idx"],
+                    torch.zeros_like(supervisions["sequence_idx"]),
+                    token_num.to("cpu").to(torch.int32),
+                ),
+                1,
+            ).to(torch.int32)
+        lattice = get_lattice(
+            nnet_output=decoder_out.to(self.decoding_graph.device),
+            decoding_graph=self.decoding_graph,
+            supervision_segments=supervision_segments,
+            search_beam=search_beam,
+            output_beam=output_beam,
+            min_active_states=min_active_states,
+            max_active_states=max_active_states,
+            subsampling_factor=subsampling_factor,
+        )
+
+        # dense_fsa_vec = k2.DenseFsaVec(
+        #     decoder_out.to(self.decoding_graph.device),
+        #     supervision_segments,
+        #     allow_truncate=subsampling_factor - 1,
+        # )
+
+        # lattice = k2.intersect_dense_pruned(
+        #     self.decoding_graph,
+        #     dense_fsa_vec,
+        #     search_beam=search_beam,
+        #     output_beam=output_beam,
+        #     min_active_states=min_active_states,
+        #     max_active_states=max_active_states,
+        # )
+        # best_path = one_best_decoding(
+        #     lattice=lattice, use_double_scores=params.use_double_scores
+        # )
+        best_path = k2.shortest_path(lattice, use_double_scores=True)
+        word_ids = get_texts(best_path)
+
+        hyps = ["".join([self.word_table[i] for i in ids if i != 893391]) for ids in word_ids]
+
+        pred = decoder_out.argmax(dim=-1)
+        pred = pred.tolist()
         return hyps, pred
 
     def decode_mask_predict(
