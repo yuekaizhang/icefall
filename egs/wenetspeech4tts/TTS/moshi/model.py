@@ -152,6 +152,7 @@ class SPEECH_LLM(nn.Module):
         self.llm = AutoModelForCausalLM.from_pretrained(
             "/workspace/Qwen2.5-0.5B-Instruct"
         )
+        self.llm.config.pad_token_id = 151643
         self.num_codebooks = 8
         self.codebook_size = 1024
         self.embed_tokens = nn.ModuleList(
@@ -317,6 +318,8 @@ class SPEECH_LLM(nn.Module):
             pad_token_id=self.codebook_size,
             max_length=audio_codes.shape[-1] + 16,
         )[0]
+        # change -23 in the original code to self.codebook_size
+        audio_codes = audio_codes.masked_fill(audio_codes == -23, self.codebook_size)
         if audio_labels:
             audio_labels = build_delay_pattern_mask(
                 audio_labels,
@@ -368,6 +371,18 @@ class SPEECH_LLM(nn.Module):
             ],
             dim=1,
         )
+        attention_mask = torch.cat(
+            [
+                attention_mask,
+                torch.full(
+                    (attention_mask.shape[0], seq_len - attention_mask.shape[1]),
+                    False,
+                    dtype=attention_mask.dtype,
+                    device=attention_mask.device,
+                ),
+            ],
+            dim=1,
+        )
         if text_labels:
             # pad the text labels to the maximum length of the audio labels with pad token
             text_labels = torch.cat(
@@ -386,21 +401,23 @@ class SPEECH_LLM(nn.Module):
             text_labels = input_ids.clone()
 
         inputs_embeds = self.llm.get_input_embeddings()(input_ids)
+
         audio_inputs_embeds = sum(
             [
                 self.embed_tokens[codebook](audio_codes[:, codebook])
-                for codebook in range(self.codebook_size)
+                for codebook in range(self.num_codebooks)
             ]
         )
-        inputs_embeds += audio_inputs_embeds
 
+        inputs_embeds += audio_inputs_embeds
         model_outputs = self.llm(
             attention_mask=attention_mask,
             inputs_embeds=inputs_embeds,
             labels=text_labels,
+            return_dict=True,
+            output_hidden_states=True,
         )
-
-        last_hidden_state = model_outputs.last_hidden_state
+        last_hidden_state = model_outputs.hidden_states[-1]
         audio_logits = [
             self.audio_lm_heads[codebook](last_hidden_state).float()
             for codebook in range(self.num_codebooks)
@@ -409,12 +426,14 @@ class SPEECH_LLM(nn.Module):
         # last hidden state shape (batch_size, sequence_length, hidden_size)
         # audio_logits shape (batch_size, sequence_length, codebook_size)
         # audio_labels shape (batch_size, sequence_length, num_codebooks)
-        total_loss = 10 * model_outputs.loss
+        audio_labels = audio_labels.transpose(1, 2)
+        # total_loss = 10 * model_outputs.loss
+        total_loss = 1 * model_outputs.loss
         for i in range(self.num_codebooks):
             shift_logits = audio_logits[i][..., :-1, :].contiguous()
             shift_labels = audio_labels[..., 1:, i].contiguous()
 
-            shift_logits = shift_logits.view(-1, self.codebook_size)
+            shift_logits = shift_logits.view(-1, self.codebook_size + 1)
             shift_labels = shift_labels.view(-1)
 
             shift_labels = shift_labels.masked_fill(
@@ -431,6 +450,8 @@ class SPEECH_LLM(nn.Module):
                 text_labels.detach()[:, 1:],
                 ignore_label=IGNORE_TOKEN_ID,
             )
+
+        print(model_outputs.loss, total_loss, acc)
 
         return total_loss, acc
 

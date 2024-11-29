@@ -583,7 +583,6 @@ def prepare_input(batch: dict, tokenizer: AutoTokenizer, device: torch.device):
     input_ids = text_tokens["input_ids"].to(device)
     attention_mask = text_tokens["attention_mask"].to(device)
     audio_features_lens = batch["features_lens"]
-    print("input_ids:", input_ids.shape, input_ids)
     return input_ids, attention_mask, features, audio_features_lens
 
 
@@ -758,7 +757,7 @@ def train_one_epoch(
 
         try:
             with torch.cuda.amp.autocast(dtype=dtype, enabled=enabled):
-                _, loss, loss_info = compute_loss(
+                loss, loss_info = compute_loss(
                     params=params,
                     model=model,
                     tokenizer=tokenizer,
@@ -1018,11 +1017,7 @@ def run(rank, world_size, args):
         logging.info("Using DDP")
         model = DDP(model, device_ids=[rank], find_unused_parameters=True)
 
-    if params.train_stage:
-        _model = model.module if isinstance(model, DDP) else model
-        model_parameters = _model.stage_parameters(params.train_stage)
-    else:
-        model_parameters = model.parameters()
+    model_parameters = model.parameters()
 
     if params.optimizer_name == "ScaledAdam":
         optimizer = ScaledAdam(
