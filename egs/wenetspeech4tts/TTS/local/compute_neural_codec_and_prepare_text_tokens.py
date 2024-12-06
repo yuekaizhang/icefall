@@ -70,16 +70,16 @@ from k2 import SymbolTable
 # from valle.data.fbank import get_fbank_extractor
 # from valle.utils import SymbolTable
 
-os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
+# os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 
 
 # Torch's multithreaded behavior needs to be disabled or
 # it wastes a lot of CPU and slow things down.
 # Do this outside of main() in case it needs to take effect
 # even when we are not invoking the main (e.g. when spawning subprocesses).
-torch.set_num_threads(1)
-torch.set_num_interop_threads(1)
-torch.multiprocessing.set_sharing_strategy("file_system")
+# torch.set_num_threads(1)
+# torch.set_num_interop_threads(1)
+# torch.multiprocessing.set_sharing_strategy("file_system")
 
 
 def get_args():

@@ -406,7 +406,7 @@ def get_params() -> AttributeDict:
             "best_train_epoch": -1,
             "best_valid_epoch": -1,
             "batch_idx_train": 0,
-            "log_interval": 100,
+            "log_interval": 1,
             "reset_interval": 200,
             "valid_interval": 10000,
             "env_info": get_env_info(),
@@ -576,8 +576,18 @@ def prepare_input(batch: dict, tokenizer: AutoTokenizer, device: torch.device):
     # audios = batch["audio"]  # torch.Size([32, 236544])
     features = batch["features"].to(device)  # torch.Size([32, 739, 8])
     features = features.transpose(1, 2)  # torch.Size([32, 8, 739])
-
-    texts = batch["text"]  # list of str
+    texts = []
+    TEMPLATE = "{% for message in messages %}{{'<|im_start|>' + message['role'] + '\n' + message['content']}}{% if loop.last %}{{ '<|im_end|>'}}{% else %}{{ '<|im_end|>\n' }}{% endif %}{% endfor %}"
+    for text in batch["text"]:
+        message = [
+            {"role": "system", "content": "请重复我说的话"},
+            {"role": "user", "content": text},
+            {"role": "assistant", "content": text},
+        ]
+        text = tokenizer.apply_chat_template(
+            message, tokenize=False, chat_template=TEMPLATE, add_generation_prompt=False
+        )
+        texts.append(text)
 
     text_tokens = tokenizer(texts, return_tensors="pt", padding=True, truncation=True)
     input_ids = text_tokens["input_ids"].to(device)
@@ -623,10 +633,11 @@ def compute_loss(
     assert audio_features.ndim == 3
 
     with torch.set_grad_enabled(is_training):
-        loss, acc = model(
+        loss, loss_list, acc_list = model(
             input_ids=text_tokens,
             attention_mask=attention_mask,
             audio_codes=audio_features,
+            audio_codes_lens=audio_features_lens,
         )
 
     assert loss.requires_grad == is_training
@@ -638,10 +649,12 @@ def compute_loss(
         info["utterances"] = text_tokens.size(0)
 
     # Note: We use reduction=sum while computing the loss.
-    info["loss"] = loss.detach().cpu().item()
-    info["acc"] = (
-        acc * info["frames"]
-    )  # WAR: to avoid normalization by the number of frames
+    info["loss"] = loss.detach().cpu().item() * info["frames"]
+
+    for i in range(len(loss_list)):
+        info[f"loss_{i}"] = loss_list[i].detach().cpu().item() * info["frames"]
+    for i in range(len(acc_list)):
+        info[f"acc_{i}"] = acc_list[i] * info["frames"]
 
     return loss, info
 
@@ -857,7 +870,6 @@ def train_one_epoch(
             logging.info(
                 f"Epoch {params.cur_epoch}, "
                 f"batch {batch_idx}, train_loss[{loss_info}], "
-                f"tot_loss[{tot_loss}], "
                 f"batch size: {batch_size}, "
                 f"lr: {cur_lr:.2e}"
                 + (
@@ -1044,19 +1056,24 @@ def run(rank, world_size, args):
         raise NotImplementedError()
 
     scheduler = Eden(optimizer, 5000, 4, warmup_batches=params.warmup_steps)
+    # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+    #     params.warmup_steps,
+    #     optimizer,
+    #     eta_min=params.base_lr,
+    # )
     optimizer.zero_grad()
 
-    if checkpoints and "optimizer" in checkpoints:
-        logging.info("Loading optimizer state dict")
-        optimizer.load_state_dict(checkpoints["optimizer"])
+    # if checkpoints and "optimizer" in checkpoints:
+    #     logging.info("Loading optimizer state dict")
+    #     optimizer.load_state_dict(checkpoints["optimizer"])
 
-    if (
-        checkpoints
-        and "scheduler" in checkpoints
-        and checkpoints["scheduler"] is not None
-    ):
-        logging.info("Loading scheduler state dict")
-        scheduler.load_state_dict(checkpoints["scheduler"])
+    # if (
+    #     checkpoints
+    #     and "scheduler" in checkpoints
+    #     and checkpoints["scheduler"] is not None
+    # ):
+    #     logging.info("Loading scheduler state dict")
+    #     scheduler.load_state_dict(checkpoints["scheduler"])
 
     if params.inf_check:
         register_inf_check_hooks(model)

@@ -1,45 +1,27 @@
+import os
 from typing import Optional
 
 import torch
+import torchaudio
+from compute_neural_codec_and_prepare_text_tokens import AudioTokenizer
 from torch import nn
 from torch.nn import CrossEntropyLoss
-from transformers import AutoModelForCausalLM
+from torchmetrics.classification import MulticlassAccuracy
+from transformers import AutoModelForCausalLM, AutoTokenizer
 from transformers.trainer_pt_utils import LabelSmoother
 
+# os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 IGNORE_TOKEN_ID = LabelSmoother.ignore_index
-assert IGNORE_TOKEN_ID == -100
 
 
-class EncoderProjector(nn.Module):
-    """
-    The encoder projector module. It is used to project the encoder outputs to the same dimension as the language model.
-    Modified from https://github.com/X-LANCE/SLAM-LLM/blob/main/src/slam_llm/models/projector.py.
-    Args:
-        encoder_dim (:obj:`int`): The dimension of the encoder outputs.
-        llm_dim (:obj:`int`): The dimension of the language model.
-        downsample_rate (:obj:`int`, `optional`, defaults to 5): The downsample rate to use.
-    """
-
-    def __init__(self, encoder_dim, llm_dim, downsample_rate=5):
-        super().__init__()
-        self.downsample_rate = downsample_rate
-        self.linear1 = nn.Linear(encoder_dim * self.downsample_rate, llm_dim)
+class MLP(nn.Module):
+    def __init__(self, input_dim, hidden_dim, output_dim):
+        super(MLP, self).__init__()
+        self.linear1 = nn.Linear(input_dim, hidden_dim)
         self.relu = nn.ReLU()
-        self.linear2 = nn.Linear(llm_dim, llm_dim)
+        self.linear2 = nn.Linear(hidden_dim, output_dim)
 
     def forward(self, x):
-
-        batch_size, seq_len, feat_dim = x.size()
-        num_frames_to_discard = seq_len % self.downsample_rate
-        if num_frames_to_discard > 0:
-            x = x[:, :-num_frames_to_discard, :]
-        seq_len = x.size(1)
-
-        x = x.contiguous()
-        x = x.view(
-            batch_size, seq_len // self.downsample_rate, feat_dim * self.downsample_rate
-        )
-
         x = self.linear1(x)
         x = self.relu(x)
         x = self.linear2(x)
@@ -145,14 +127,20 @@ class SPEECH_LLM(nn.Module):
         encoder: nn.Module = None,
         llm: nn.Module = None,
         encoder_projector: nn.Module = None,
+        model_path: str = "/workspace/Qwen2.5-0.5B-Instruct",
+        freeze_llm: bool = False,
+        post_adapter: bool = False,
     ):
         super().__init__()
-        # self.encoder = encoder
-        # self.llm = AutoModelForCausalLM.from_pretrained("Qwen/Qwen2.5-0.5B-Instruct")
-        self.llm = AutoModelForCausalLM.from_pretrained(
-            "/workspace/Qwen2.5-0.5B-Instruct"
-        )
+
+        self.llm = AutoModelForCausalLM.from_pretrained(model_path)
+        if freeze_llm:
+            for name, param in self.llm.named_parameters():
+                param.requires_grad = False
+
+        self.tokenizer = AutoTokenizer.from_pretrained(model_path)
         self.llm.config.pad_token_id = 151643
+
         self.num_codebooks = 8
         self.codebook_size = 1024
         self.embed_tokens = nn.ModuleList(
@@ -167,144 +155,43 @@ class SPEECH_LLM(nn.Module):
                 for _ in range(self.num_codebooks)
             ]
         )
-        # self.encoder_projector = encoder_projector
+
         self.loss_fct = CrossEntropyLoss()
-
-    def _merge_input_ids_with_speech_features(
-        self, speech_features, inputs_embeds, input_ids, attention_mask, labels=None
-    ):
-        """
-        Merge the speech features with the input_ids and attention_mask. This is done by replacing the speech tokens
-        with the speech features and padding the input_ids to the maximum length of the speech features.
-        Modified from https://github.com/huggingface/transformers/blob/main/src/transformers/models/llava/modeling_llava.py#L277.
-        Args:
-            speech_features (:obj:`torch.Tensor`): The speech features to merge with the input_ids.
-            inputs_embeds (:obj:`torch.Tensor`): The embeddings of the input_ids.
-            input_ids (:obj:`torch.Tensor`): The input ids to merge.
-            attention_mask (:obj:`torch.Tensor`): The attention mask to merge.
-            labels (:obj:`torch.Tensor`, `optional`): The labels to merge.
-        Returns:
-            :obj:`Tuple(torch.Tensor)`: The merged embeddings, attention mask, labels and position ids.
-        """
-        num_speechs, speech_len, embed_dim = speech_features.shape
-        batch_size, sequence_length = input_ids.shape
-        left_padding = not torch.sum(
-            input_ids[:, -1] == torch.tensor(self.llm.config.pad_token_id)
+        self.audio_accuracy_metric = MulticlassAccuracy(
+            self.codebook_size + 1,
+            top_k=10,
+            average="micro",
+            multidim_average="global",
+            ignore_index=IGNORE_TOKEN_ID,
         )
-        # 1. Create a mask to know where special speech tokens are
-        special_speech_token_mask = input_ids == self.llm.config.default_speech_token_id
-        num_special_speech_tokens = torch.sum(special_speech_token_mask, dim=-1)
-        # Compute the maximum embed dimension
-        max_embed_dim = (
-            num_special_speech_tokens.max() * (speech_len - 1)
-        ) + sequence_length
-        batch_indices, non_speech_indices = torch.where(
-            input_ids != self.llm.config.default_speech_token_id
-        )
-
-        # 2. Compute the positions where text should be written
-        # Calculate new positions for text tokens in merged speech-text sequence.
-        # `special_speech_token_mask` identifies speech tokens. Each speech token will be replaced by `nb_text_tokens_per_speechs - 1` text tokens.
-        # `torch.cumsum` computes how each speech token shifts subsequent text token positions.
-        # - 1 to adjust for zero-based indexing, as `cumsum` inherently increases indices by one.
-        new_token_positions = (
-            torch.cumsum((special_speech_token_mask * (speech_len - 1) + 1), -1) - 1
-        )
-        nb_speech_pad = max_embed_dim - 1 - new_token_positions[:, -1]
-        if left_padding:
-            new_token_positions += nb_speech_pad[:, None]  # offset for left padding
-        text_to_overwrite = new_token_positions[batch_indices, non_speech_indices]
-
-        # 3. Create the full embedding, already padded to the maximum position
-        final_embedding = torch.zeros(
-            batch_size,
-            max_embed_dim,
-            embed_dim,
-            dtype=inputs_embeds.dtype,
-            device=inputs_embeds.device,
-        )
-        final_attention_mask = torch.zeros(
-            batch_size,
-            max_embed_dim,
-            dtype=attention_mask.dtype,
-            device=inputs_embeds.device,
-        )
-        if labels is not None:
-            final_labels = torch.full(
-                (batch_size, max_embed_dim),
-                IGNORE_TOKEN_ID,
-                dtype=input_ids.dtype,
-                device=input_ids.device,
+        if post_adapter:
+            self.post_adapter = nn.ModuleList(
+                [
+                    MLP(self.llm.config.hidden_size, 2048, self.llm.config.hidden_size)
+                    for _ in range(2)
+                ]
             )
-        # In case the Vision model or the Language model has been offloaded to CPU, we need to manually
-        # set the corresponding tensors into their correct target device.
-        target_device = inputs_embeds.device
-        batch_indices, non_speech_indices, text_to_overwrite = (
-            batch_indices.to(target_device),
-            non_speech_indices.to(target_device),
-            text_to_overwrite.to(target_device),
-        )
-        attention_mask = attention_mask.to(target_device)
+        else:
+            self.post_adapter = None
 
-        # 4. Fill the embeddings based on the mask. If we have ["hey" "<speech>", "how", "are"]
-        # we need to index copy on [0, 577, 578, 579] for the text and [1:576] for the speech features
-        final_embedding[batch_indices, text_to_overwrite] = inputs_embeds[
-            batch_indices, non_speech_indices
-        ]
-        final_attention_mask[batch_indices, text_to_overwrite] = attention_mask[
-            batch_indices, non_speech_indices
-        ]
-        if labels is not None:
-            final_labels[batch_indices, text_to_overwrite] = labels[
-                batch_indices, non_speech_indices
-            ]
+        self.audio_tokenizer = AudioTokenizer()
 
-        # 5. Fill the embeddings corresponding to the speechs. Anything that is not `text_positions` needs filling (#29835)
-        speech_to_overwrite = torch.full(
-            (batch_size, max_embed_dim),
-            True,
-            dtype=torch.bool,
-            device=inputs_embeds.device,
-        )
-        speech_to_overwrite[batch_indices, text_to_overwrite] = False
-        speech_to_overwrite &= speech_to_overwrite.cumsum(-1) - 1 >= nb_speech_pad[
-            :, None
-        ].to(target_device)
-
-        if speech_to_overwrite.sum() != speech_features.shape[:-1].numel():
-            raise ValueError(
-                f"The input provided to the model are wrong. The number of speech tokens is {torch.sum(special_speech_token_mask)} while"
-                f" the number of speech given to the model is {num_speechs}. This prevents correct indexing and breaks batch generation."
-            )
-
-        final_embedding[speech_to_overwrite] = (
-            speech_features.contiguous().reshape(-1, embed_dim).to(target_device)
-        )
-        final_attention_mask |= speech_to_overwrite
-        position_ids = (final_attention_mask.cumsum(-1) - 1).masked_fill_(
-            (final_attention_mask == 0), 1
-        )
-
-        # 6. Mask out the embedding at padding positions, as we later use the past_key_value value to determine the non-attended tokens.
-        batch_indices, pad_indices = torch.where(
-            input_ids == self.llm.config.pad_token_id
-        )
-        indices_to_mask = new_token_positions[batch_indices, pad_indices]
-
-        final_embedding[batch_indices, indices_to_mask] = 0
-
-        if labels is None:
-            final_labels = None
-
-        return final_embedding, final_attention_mask, final_labels, position_ids
+    def save_audio(self, audio_codes, path):
+        audio_code = audio_codes.unsqueeze(0)
+        audio_code = audio_code.to(torch.int64)
+        samples_org = self.audio_tokenizer.decode([(audio_code, None)])
+        torchaudio.save(path, samples_org[0].cpu(), 24000)
 
     def forward(
         self,
         input_ids: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.BoolTensor] = None,
         audio_codes: Optional[torch.Tensor] = None,
+        audio_codes_lens: Optional[torch.LongTensor] = None,
         text_labels: Optional[torch.LongTensor] = None,
         audio_labels: Optional[torch.LongTensor] = None,
+        text_loss_scale: float = 1.0,
+        debug: bool = True,
     ):
         """
         input_ids: (batch_size, sequence_length)
@@ -312,49 +199,69 @@ class SPEECH_LLM(nn.Module):
         text_labels: (batch_size, sequence_length)
         audio_labels: (batch_size, num_codebooks, sequence_length)
         """
+        audio_codes_origin = audio_codes.clone()
+        print("The original audio codes are", audio_codes[0].shape, audio_codes[0])
+        # WAR: 16 is a heuristic value
         audio_codes = build_delay_pattern_mask(
             audio_codes,
             bos_token_id=self.codebook_size,
             pad_token_id=self.codebook_size,
             max_length=audio_codes.shape[-1] + 16,
         )[0]
+        print("The audio codes are", audio_codes[0].shape, audio_codes[0])
         # change -23 in the original code to self.codebook_size
         audio_codes = audio_codes.masked_fill(audio_codes == -23, self.codebook_size)
-        if audio_labels:
-            audio_labels = build_delay_pattern_mask(
-                audio_labels,
-                bos_token_id=self.codebook_size,
-                pad_token_id=self.codebook_size,
-                max_length=audio_labels.shape[-1] + 16,
-            )[0]
-        else:
-            audio_labels = audio_codes.clone()
 
-        # now we could left pad the audio codes and audio labels to let text tokens be predicted before audio tokens
-        shift_text_tokens = 2
-        audio_codes = torch.cat(
+        # mask input prompt
+        assistant_id = self.tokenizer.convert_tokens_to_ids("assistant")
+        text_labels = input_ids.clone()
+        audio_codes_list = []
+
+        for i in range(len(input_ids)):
+            assistant_index = torch.where(input_ids[i] == assistant_id)[0]
+            assert assistant_index > 0
+            text_labels[i, : assistant_index + 1] = IGNORE_TOKEN_ID
+            num_shift_token = assistant_index + 1
+
+            # now we could left pad the audio codes to make sure the real codes start from the tokens after the assistant token
+            assert audio_codes[i].shape[0] == self.num_codebooks
+            audio_code = torch.cat(
+                [
+                    torch.full(
+                        (audio_codes[i].shape[0], num_shift_token),
+                        self.codebook_size,
+                        dtype=audio_codes.dtype,
+                        device=audio_codes.device,
+                    ),
+                    audio_codes[i],
+                ],
+                dim=-1,
+            )
+            audio_codes_list.append(audio_code)
+
+        # now we could right pad the audio_codes_list to get the audio_codes
+        max_seq_len = max([audio_code.shape[-1] for audio_code in audio_codes_list])
+        audio_codes = torch.stack(
             [
-                torch.full(
-                    (audio_codes.shape[0], audio_codes.shape[1], shift_text_tokens),
-                    self.codebook_size,
-                    dtype=audio_codes.dtype,
-                    device=audio_codes.device,
-                ),
-                audio_codes,
-            ],
-            dim=-1,
+                torch.cat(
+                    [
+                        audio_code,
+                        torch.full(
+                            (self.num_codebooks, max_seq_len - audio_code.shape[-1]),
+                            self.codebook_size,
+                            dtype=audio_codes.dtype,
+                            device=audio_codes.device,
+                        ),
+                    ],
+                    dim=-1,
+                )
+                for audio_code in audio_codes_list
+            ]
         )
-        audio_labels = torch.cat(
-            [
-                torch.full(
-                    (audio_labels.shape[0], audio_labels.shape[1], shift_text_tokens),
-                    self.codebook_size,
-                    dtype=audio_labels.dtype,
-                    device=audio_labels.device,
-                ),
-                audio_labels,
-            ],
-            dim=-1,
+
+        audio_labels = audio_codes.clone()
+        audio_labels = audio_labels.masked_fill(
+            audio_labels == self.codebook_size, IGNORE_TOKEN_ID
         )
 
         seq_len = audio_codes.shape[-1]
@@ -383,24 +290,22 @@ class SPEECH_LLM(nn.Module):
             ],
             dim=1,
         )
-        if text_labels:
-            # pad the text labels to the maximum length of the audio labels with pad token
-            text_labels = torch.cat(
-                [
-                    text_labels,
-                    torch.full(
-                        (text_labels.shape[0], seq_len - text_labels.shape[1]),
-                        self.llm.config.pad_token_id,
-                        dtype=text_labels.dtype,
-                        device=text_labels.device,
-                    ),
-                ],
-                dim=1,
-            )
-        else:
-            text_labels = input_ids.clone()
+        text_labels = torch.cat(
+            [
+                text_labels,
+                torch.full(
+                    (text_labels.shape[0], seq_len - text_labels.shape[1]),
+                    self.llm.config.pad_token_id,
+                    dtype=text_labels.dtype,
+                    device=text_labels.device,
+                ),
+            ],
+            dim=1,
+        )
 
-        inputs_embeds = self.llm.get_input_embeddings()(input_ids)
+        text_labels[text_labels == self.llm.config.pad_token_id] = IGNORE_TOKEN_ID
+
+        inputs_text_embeds = self.llm.get_input_embeddings()(input_ids)
 
         audio_inputs_embeds = sum(
             [
@@ -409,7 +314,10 @@ class SPEECH_LLM(nn.Module):
             ]
         )
 
-        inputs_embeds += audio_inputs_embeds
+        inputs_embeds = inputs_text_embeds + audio_inputs_embeds
+        inputs_embeds /= self.num_codebooks + 1
+        # inputs_embeds = self.embed_tokens[0](audio_codes[:, 0])
+
         model_outputs = self.llm(
             attention_mask=attention_mask,
             inputs_embeds=inputs_embeds,
@@ -417,18 +325,80 @@ class SPEECH_LLM(nn.Module):
             return_dict=True,
             output_hidden_states=True,
         )
-        last_hidden_state = model_outputs.hidden_states[-1]
+        model_outputs_text = model_outputs
+        # model_outputs_text = self.llm(
+        #     attention_mask=attention_mask,
+        #     inputs_embeds=inputs_text_embeds,
+        #     labels=text_labels,
+        #     return_dict=True,
+        #     output_hidden_states=True,
+        # )
+        if debug:
+            with torch.no_grad():
+                preds = torch.argmax(model_outputs_text.logits, -1)
+                acc = compute_accuracy(
+                    preds.detach()[:, :-1],
+                    text_labels.detach()[:, 1:],
+                    ignore_label=IGNORE_TOKEN_ID,
+                )
+
+                pad_mask = torch.where(text_labels[0] != IGNORE_TOKEN_ID)
+                pred_text = preds[0][pad_mask]
+                target_text = text_labels[0][pad_mask]
+                print(f"the text is {self.tokenizer.decode(pred_text)}")
+                print(f"the label is {self.tokenizer.decode(target_text)}")
+
+        last_hidden_state = model_outputs.hidden_states[-1].clone()
+        if self.post_adapter is not None:
+            last_hidden_state = self.post_adapter[0](last_hidden_state)
+            last_hidden_state = self.post_adapter[1](last_hidden_state)
         audio_logits = [
             self.audio_lm_heads[codebook](last_hidden_state).float()
             for codebook in range(self.num_codebooks)
         ]
 
+        # get pred audio codes from audio_logits
+        audio_logits_shifted = [
+            audio_logit[..., :-1, :].contiguous() for audio_logit in audio_logits
+        ]
+        audio_codes_pred = [
+            torch.argmax(audio_logit, dim=-1) for audio_logit in audio_logits_shifted
+        ]
+        audio_codes_pred = torch.stack(audio_codes_pred, dim=1)
+        print(
+            "The audio codes pred are",
+            audio_codes_pred[0].shape,
+            audio_codes_pred[0][:, :10],
+        )
+        audio_codes_real = torch.zeros_like(audio_codes_pred)
+        for i in range(self.num_codebooks):
+            seq_len = audio_codes_pred.shape[-1] - 8
+            audio_codes_real[:, i, :seq_len] = audio_codes_pred[:, i, i : i + seq_len]
+        audio_codes_real = audio_codes_real[:, :, :seq_len]
+        audio_codes_first_level_ground = audio_codes_real.clone()
+        for i in range(len(audio_codes_real)):
+            audio_codes_first_level_ground[
+                i, 0, : audio_codes_lens[i]
+            ] = audio_codes_origin[i, 0, : audio_codes_lens[i]]
+            self.save_audio(
+                audio_codes_real[i][: audio_codes_lens[i]], f"audio_codes_real_{i}.wav"
+            )
+            self.save_audio(
+                audio_codes_pred[i][: audio_codes_lens[i]], f"audio_codes_pred_{i}.wav"
+            )
+            self.save_audio(
+                audio_codes_first_level_ground[i][: audio_codes_lens[i]],
+                f"audio_codes_first_level_ground_{i}.wav",
+            )
+        exit(0)
+
         # last hidden state shape (batch_size, sequence_length, hidden_size)
         # audio_logits shape (batch_size, sequence_length, codebook_size)
         # audio_labels shape (batch_size, sequence_length, num_codebooks)
         audio_labels = audio_labels.transpose(1, 2)
-        # total_loss = 10 * model_outputs.loss
-        total_loss = 1 * model_outputs.loss
+        total_loss = [model_outputs_text.loss]
+        top_k_acc_list = [acc]
+
         for i in range(self.num_codebooks):
             shift_logits = audio_logits[i][..., :-1, :].contiguous()
             shift_labels = audio_labels[..., 1:, i].contiguous()
@@ -436,61 +406,17 @@ class SPEECH_LLM(nn.Module):
             shift_logits = shift_logits.view(-1, self.codebook_size + 1)
             shift_labels = shift_labels.view(-1)
 
-            shift_labels = shift_labels.masked_fill(
-                shift_labels == self.codebook_size, -100
-            )
-
             loss = self.loss_fct(shift_logits, shift_labels)
-            total_loss += loss
+            total_loss.append(loss)
 
-        with torch.no_grad():
-            preds = torch.argmax(model_outputs.logits, -1)
-            acc = compute_accuracy(
-                preds.detach()[:, :-1],
-                text_labels.detach()[:, 1:],
-                ignore_label=IGNORE_TOKEN_ID,
-            )
+            if debug:
+                top_k_acc = self.audio_accuracy_metric(
+                    shift_logits.detach(), shift_labels
+                ).item()
+                top_k_acc_list.append(top_k_acc)
 
-        print(model_outputs.loss, total_loss, acc)
-
-        return total_loss, acc
-
-    def decode(
-        self,
-        fbank: torch.Tensor = None,
-        input_ids: torch.LongTensor = None,
-        attention_mask: torch.Tensor = None,
-        **kwargs,
-    ):
-
-        encoder_outs = self.encoder(fbank)
-        speech_features = self.encoder_projector(encoder_outs)
-        speech_features = speech_features.to(torch.float16)
-        inputs_embeds = self.llm.get_input_embeddings()(input_ids)
-        (
-            inputs_embeds,
-            attention_mask,
-            _,
-            position_ids,
-        ) = self._merge_input_ids_with_speech_features(
-            speech_features, inputs_embeds, input_ids, attention_mask
-        )
-        generated_ids = self.llm.generate(
-            inputs_embeds=inputs_embeds,
-            max_new_tokens=kwargs.get("max_new_tokens", 200),
-            num_beams=kwargs.get("num_beams", 1),
-            do_sample=kwargs.get("do_sample", False),
-            min_length=kwargs.get("min_length", 1),
-            top_p=kwargs.get("top_p", 1.0),
-            repetition_penalty=kwargs.get("repetition_penalty", 1.0),
-            length_penalty=kwargs.get("length_penalty", 1.0),
-            temperature=kwargs.get("temperature", 1.0),
-            bos_token_id=self.llm.config.bos_token_id,
-            eos_token_id=self.llm.config.eos_token_id,
-            pad_token_id=self.llm.config.pad_token_id,
-        )
-
-        return generated_ids
+        total_loss_value = text_loss_scale * total_loss[0] + sum(total_loss[1:])
+        return total_loss_value, total_loss, top_k_acc_list
 
 
 def compute_accuracy(pad_outputs, pad_targets, ignore_label):
