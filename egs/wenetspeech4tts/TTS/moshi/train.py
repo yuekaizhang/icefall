@@ -579,10 +579,13 @@ def prepare_input(batch: dict, tokenizer: AutoTokenizer, device: torch.device):
     texts = []
     TEMPLATE = "{% for message in messages %}{{'<|im_start|>' + message['role'] + '\n' + message['content']}}{% if loop.last %}{{ '<|im_end|>'}}{% else %}{{ '<|im_end|>\n' }}{% endif %}{% endfor %}"
     for text in batch["text"]:
+        # message = [
+        #     {"role": "system", "content": "请重复我说的话"},
+        #     {"role": "user", "content": text},
+        #     {"role": "assistant", "content": text},
+        # ]
         message = [
-            {"role": "system", "content": "请重复我说的话"},
             {"role": "user", "content": text},
-            {"role": "assistant", "content": text},
         ]
         text = tokenizer.apply_chat_template(
             message, tokenize=False, chat_template=TEMPLATE, add_generation_prompt=False
@@ -1079,7 +1082,9 @@ def run(rank, world_size, args):
         register_inf_check_hooks(model)
 
     if params.start_batch > 0 and checkpoints and "sampler" in checkpoints:
-        sampler_state_dict = checkpoints["sampler"]
+        # sampler_state_dict = checkpoints["sampler"]
+        sampler_state_dict = None
+        raise NotImplementedError
     else:
         sampler_state_dict = None
 

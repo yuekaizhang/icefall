@@ -143,22 +143,26 @@ class SPEECH_LLM(nn.Module):
 
         self.num_codebooks = 8
         self.codebook_size = 1024
+        self.audio_bos_token_id = self.codebook_size
+        self.audio_eos_token_id = self.codebook_size + 1
+        self.audio_pad_token_id = self.codebook_size + 2
+        self.audio_vocab_size = self.codebook_size + 3
         self.embed_tokens = nn.ModuleList(
             [
-                nn.Embedding(self.codebook_size + 1, self.llm.config.hidden_size)
+                nn.Embedding(self.audio_vocab_size, self.llm.config.hidden_size)
                 for _ in range(self.num_codebooks)
             ]
         )
         self.audio_lm_heads = nn.ModuleList(
             [
-                nn.Linear(self.llm.config.hidden_size, self.codebook_size + 1)
+                nn.Linear(self.llm.config.hidden_size, self.audio_vocab_size)
                 for _ in range(self.num_codebooks)
             ]
         )
 
         self.loss_fct = CrossEntropyLoss()
         self.audio_accuracy_metric = MulticlassAccuracy(
-            self.codebook_size + 1,
+            self.audio_vocab_size,
             top_k=10,
             average="micro",
             multidim_average="global",
@@ -199,224 +203,303 @@ class SPEECH_LLM(nn.Module):
         text_labels: (batch_size, sequence_length)
         audio_labels: (batch_size, num_codebooks, sequence_length)
         """
-        audio_codes_origin = audio_codes.clone()
-        print("The original audio codes are", audio_codes[0].shape, audio_codes[0])
-        # WAR: 16 is a heuristic value
-        audio_codes = build_delay_pattern_mask(
-            audio_codes,
-            bos_token_id=self.codebook_size,
-            pad_token_id=self.codebook_size,
-            max_length=audio_codes.shape[-1] + 16,
-        )[0]
-        print("The audio codes are", audio_codes[0].shape, audio_codes[0])
-        # change -23 in the original code to self.codebook_size
-        audio_codes = audio_codes.masked_fill(audio_codes == -23, self.codebook_size)
+        # change the -23 pad token to the eos token id
+        audio_codes = audio_codes.to(torch.int64)
+        audio_codes = audio_codes.masked_fill(
+            audio_codes == -23, self.audio_pad_token_id
+        )
 
-        # mask input prompt
-        assistant_id = self.tokenizer.convert_tokens_to_ids("assistant")
-        text_labels = input_ids.clone()
-        audio_codes_list = []
-
-        for i in range(len(input_ids)):
-            assistant_index = torch.where(input_ids[i] == assistant_id)[0]
-            assert assistant_index > 0
-            text_labels[i, : assistant_index + 1] = IGNORE_TOKEN_ID
-            num_shift_token = assistant_index + 1
-
-            # now we could left pad the audio codes to make sure the real codes start from the tokens after the assistant token
-            assert audio_codes[i].shape[0] == self.num_codebooks
-            audio_code = torch.cat(
-                [
-                    torch.full(
-                        (audio_codes[i].shape[0], num_shift_token),
-                        self.codebook_size,
-                        dtype=audio_codes.dtype,
-                        device=audio_codes.device,
-                    ),
-                    audio_codes[i],
-                ],
-                dim=-1,
-            )
-            audio_codes_list.append(audio_code)
-
-        # now we could right pad the audio_codes_list to get the audio_codes
-        max_seq_len = max([audio_code.shape[-1] for audio_code in audio_codes_list])
-        audio_codes = torch.stack(
+        # add bos token to the audio codes
+        audio_codes_input = torch.cat(
             [
-                torch.cat(
-                    [
-                        audio_code,
-                        torch.full(
-                            (self.num_codebooks, max_seq_len - audio_code.shape[-1]),
-                            self.codebook_size,
-                            dtype=audio_codes.dtype,
-                            device=audio_codes.device,
-                        ),
-                    ],
-                    dim=-1,
-                )
-                for audio_code in audio_codes_list
+                torch.full(
+                    (audio_codes.shape[0], audio_codes.shape[1], 1),
+                    self.audio_bos_token_id,
+                    dtype=audio_codes.dtype,
+                    device=audio_codes.device,
+                ),
+                audio_codes,
+            ],
+            dim=-1,
+        )
+        # add eos token to the audio labels
+        audio_labels = torch.cat(
+            [
+                audio_codes,
+                torch.full(
+                    (audio_codes.shape[0], audio_codes.shape[1], 1),
+                    self.audio_pad_token_id,
+                    dtype=audio_codes.dtype,
+                    device=audio_codes.device,
+                ),
+            ],
+            dim=-1,
+        )
+        for i in range(len(audio_codes_lens)):
+            audio_labels[i, :, audio_codes_lens[i]] = self.audio_eos_token_id
+
+        # build the delay pattern audio codes and audio labels
+        # delayed shape is (batch_size, num_codebooks, sequence_length+num_codebooks-1)
+        delayed_audio_inputs = torch.full(
+            (
+                audio_codes.shape[0],
+                audio_codes.shape[1],
+                audio_codes_input.shape[2] + self.num_codebooks - 1,
+            ),
+            self.audio_pad_token_id,
+            dtype=audio_codes.dtype,
+            device=audio_codes.device,
+        )
+        delayed_audio_labels = delayed_audio_inputs.clone()
+        for i in range(self.num_codebooks):
+            delayed_audio_inputs[
+                :, i, i : i + audio_codes_input.shape[2]
+            ] = audio_codes_input[:, i]
+            delayed_audio_labels[:, i, i : i + audio_labels.shape[2]] = audio_labels[
+                :, i
             ]
-        )
-
-        audio_labels = audio_codes.clone()
-        audio_labels = audio_labels.masked_fill(
-            audio_labels == self.codebook_size, IGNORE_TOKEN_ID
-        )
-
-        seq_len = audio_codes.shape[-1]
-        # pad the input_ids to the maximum length of the audio codes with pad token
-        input_ids = torch.cat(
-            [
-                input_ids,
-                torch.full(
-                    (input_ids.shape[0], seq_len - input_ids.shape[1]),
-                    self.llm.config.pad_token_id,
-                    dtype=input_ids.dtype,
-                    device=input_ids.device,
-                ),
-            ],
-            dim=1,
-        )
-        attention_mask = torch.cat(
-            [
-                attention_mask,
-                torch.full(
-                    (attention_mask.shape[0], seq_len - attention_mask.shape[1]),
-                    False,
-                    dtype=attention_mask.dtype,
-                    device=attention_mask.device,
-                ),
-            ],
-            dim=1,
-        )
-        text_labels = torch.cat(
-            [
-                text_labels,
-                torch.full(
-                    (text_labels.shape[0], seq_len - text_labels.shape[1]),
-                    self.llm.config.pad_token_id,
-                    dtype=text_labels.dtype,
-                    device=text_labels.device,
-                ),
-            ],
-            dim=1,
-        )
-
-        text_labels[text_labels == self.llm.config.pad_token_id] = IGNORE_TOKEN_ID
 
         inputs_text_embeds = self.llm.get_input_embeddings()(input_ids)
-
-        audio_inputs_embeds = sum(
+        inputs_audio_embeds = sum(
             [
-                self.embed_tokens[codebook](audio_codes[:, codebook])
+                self.embed_tokens[codebook](delayed_audio_inputs[:, codebook])
                 for codebook in range(self.num_codebooks)
             ]
         )
+        # construct inputs_audio_attention_mask from audio_codes_lens, now we add the bos token and self.num_codebooks-1 padding tokens
+        audio_codes_lens_pad = audio_codes_lens + 1 + self.num_codebooks - 1
+        # inputs_audio_attention_mask has shape (batch_size, sequence_length)
+        inputs_audio_attention_mask = torch.arange(
+            inputs_audio_embeds.shape[1], device=inputs_audio_embeds.device
+        ).expand(inputs_audio_embeds.shape[0], -1) < audio_codes_lens_pad.unsqueeze(
+            1
+        ).to(
+            inputs_audio_embeds.device
+        )
 
-        inputs_embeds = inputs_text_embeds + audio_inputs_embeds
-        inputs_embeds /= self.num_codebooks + 1
-        # inputs_embeds = self.embed_tokens[0](audio_codes[:, 0])
+        # concatenate the text and audio embeddings
+        inputs_embeds = torch.cat([inputs_text_embeds, inputs_audio_embeds], dim=1)
+        attention_mask = torch.cat([attention_mask, inputs_audio_attention_mask], dim=1)
 
         model_outputs = self.llm(
             attention_mask=attention_mask,
             inputs_embeds=inputs_embeds,
-            labels=text_labels,
             return_dict=True,
             output_hidden_states=True,
         )
-        model_outputs_text = model_outputs
-        # model_outputs_text = self.llm(
-        #     attention_mask=attention_mask,
-        #     inputs_embeds=inputs_text_embeds,
-        #     labels=text_labels,
-        #     return_dict=True,
-        #     output_hidden_states=True,
-        # )
-        if debug:
-            with torch.no_grad():
-                preds = torch.argmax(model_outputs_text.logits, -1)
-                acc = compute_accuracy(
-                    preds.detach()[:, :-1],
-                    text_labels.detach()[:, 1:],
-                    ignore_label=IGNORE_TOKEN_ID,
-                )
-
-                pad_mask = torch.where(text_labels[0] != IGNORE_TOKEN_ID)
-                pred_text = preds[0][pad_mask]
-                target_text = text_labels[0][pad_mask]
-                print(f"the text is {self.tokenizer.decode(pred_text)}")
-                print(f"the label is {self.tokenizer.decode(target_text)}")
-
         last_hidden_state = model_outputs.hidden_states[-1].clone()
-        if self.post_adapter is not None:
-            last_hidden_state = self.post_adapter[0](last_hidden_state)
-            last_hidden_state = self.post_adapter[1](last_hidden_state)
+
         audio_logits = [
             self.audio_lm_heads[codebook](last_hidden_state).float()
             for codebook in range(self.num_codebooks)
         ]
 
-        # get pred audio codes from audio_logits
-        audio_logits_shifted = [
-            audio_logit[..., :-1, :].contiguous() for audio_logit in audio_logits
-        ]
-        audio_codes_pred = [
-            torch.argmax(audio_logit, dim=-1) for audio_logit in audio_logits_shifted
-        ]
-        audio_codes_pred = torch.stack(audio_codes_pred, dim=1)
-        print(
-            "The audio codes pred are",
-            audio_codes_pred[0].shape,
-            audio_codes_pred[0][:, :10],
+        # stack the audio logits
+        # audio_logits shape (batch_size, sequence_length, vocab_size, num_codebooks)
+        audio_logits = torch.stack(audio_logits, dim=-1)
+        # get the audio part only
+        audio_logits = audio_logits[:, inputs_text_embeds.shape[1] :]
+
+        # get the real audio from audio_logits
+        # real_audio_index = audio_logits.argmax(dim=-2)
+        # # real_audio_index shape (batch_size, sequence_length, num_codebooks)
+        # real_audio_index = real_audio_index.transpose(1, 2)
+        # real_audio_code = torch.full(
+        #     (real_audio_index.shape[0], self.num_codebooks, real_audio_index.shape[2]-self.num_codebooks+1-1),
+        #     self.audio_pad_token_id,
+        #     dtype=real_audio_index.dtype,
+        #     device=real_audio_index.device,
+        # )
+        # for i in range(self.num_codebooks):
+        #     real_audio_code[:, i, :] = real_audio_index[:, i, i : i + real_audio_code.shape[2]]
+        # # now save the real audio
+        # for i in range(real_audio_code.shape[0]):
+        #     # get the first index of eos token, then slice the real_audio_code
+        #     eos_index = (real_audio_code[i] == self.audio_eos_token_id).nonzero(as_tuple=True)[1][0]
+        #     real_audio_code_save = real_audio_code[i, :, :eos_index - 1]
+        #     print(real_audio_code_save.shape, real_audio_code[i].shape, eos_index)
+        #     self.save_audio(real_audio_code_save, f"real_audio_checkpoint_{i}.wav")
+        # exit(0)
+
+        total_loss = []
+        top_k_acc_list = []
+
+        # replace the delay audio labels' pad token with the IGNORE_TOKEN_ID
+        delayed_audio_labels = delayed_audio_labels.masked_fill(
+            delayed_audio_labels == self.audio_pad_token_id, IGNORE_TOKEN_ID
         )
-        audio_codes_real = torch.zeros_like(audio_codes_pred)
-        for i in range(self.num_codebooks):
-            seq_len = audio_codes_pred.shape[-1] - 8
-            audio_codes_real[:, i, :seq_len] = audio_codes_pred[:, i, i : i + seq_len]
-        audio_codes_real = audio_codes_real[:, :, :seq_len]
-        audio_codes_first_level_ground = audio_codes_real.clone()
-        for i in range(len(audio_codes_real)):
-            audio_codes_first_level_ground[
-                i, 0, : audio_codes_lens[i]
-            ] = audio_codes_origin[i, 0, : audio_codes_lens[i]]
-            self.save_audio(
-                audio_codes_real[i][: audio_codes_lens[i]], f"audio_codes_real_{i}.wav"
-            )
-            self.save_audio(
-                audio_codes_pred[i][: audio_codes_lens[i]], f"audio_codes_pred_{i}.wav"
-            )
-            self.save_audio(
-                audio_codes_first_level_ground[i][: audio_codes_lens[i]],
-                f"audio_codes_first_level_ground_{i}.wav",
-            )
-        exit(0)
-
-        # last hidden state shape (batch_size, sequence_length, hidden_size)
-        # audio_logits shape (batch_size, sequence_length, codebook_size)
-        # audio_labels shape (batch_size, sequence_length, num_codebooks)
-        audio_labels = audio_labels.transpose(1, 2)
-        total_loss = [model_outputs_text.loss]
-        top_k_acc_list = [acc]
 
         for i in range(self.num_codebooks):
-            shift_logits = audio_logits[i][..., :-1, :].contiguous()
-            shift_labels = audio_labels[..., 1:, i].contiguous()
+            logits = audio_logits[:, :, :, i]
+            labels = delayed_audio_labels[:, i]
 
-            shift_logits = shift_logits.view(-1, self.codebook_size + 1)
-            shift_labels = shift_labels.view(-1)
+            logits = logits.contiguous().view(-1, self.audio_vocab_size)
+            labels = labels.contiguous().view(-1)
 
-            loss = self.loss_fct(shift_logits, shift_labels)
+            loss = self.loss_fct(logits, labels)
             total_loss.append(loss)
-
             if debug:
-                top_k_acc = self.audio_accuracy_metric(
-                    shift_logits.detach(), shift_labels
-                ).item()
+                top_k_acc = self.audio_accuracy_metric(logits.detach(), labels).item()
                 top_k_acc_list.append(top_k_acc)
 
-        total_loss_value = text_loss_scale * total_loss[0] + sum(total_loss[1:])
+        total_loss_value = sum(total_loss)
         return total_loss_value, total_loss, top_k_acc_list
+
+    def generate(
+        self,
+        input_ids: Optional[torch.LongTensor] = None,
+        prompt_audio_codes: Optional[torch.Tensor] = None,
+        audio_path_list: Optional[str] = None,
+        attention_mask: Optional[torch.BoolTensor] = None,
+        max_length: int = 1024,
+    ):
+        """
+        input_ids: (batch_size, sequence_length)
+        audio_codes: (batch_size, num_codebooks, sequence_length)
+        """
+        # change the -23 pad token to the eos token id
+        audio_codes = prompt_audio_codes.to(torch.int64)
+        audio_codes = audio_codes.masked_fill(
+            audio_codes == -23, self.audio_pad_token_id
+        )
+
+        # add bos token to the audio codes
+        audio_codes_input = torch.cat(
+            [
+                torch.full(
+                    (audio_codes.shape[0], audio_codes.shape[1], 1),
+                    self.audio_bos_token_id,
+                    dtype=audio_codes.dtype,
+                    device=audio_codes.device,
+                ),
+                audio_codes,
+            ],
+            dim=-1,
+        )
+
+        # build the delay pattern audio codes and audio labels
+        # delayed shape is (batch_size, num_codebooks, sequence_length+num_codebooks-1)
+        delayed_audio_inputs = torch.full(
+            (
+                audio_codes.shape[0],
+                audio_codes.shape[1],
+                audio_codes_input.shape[2] + self.num_codebooks - 1,
+            ),
+            self.audio_pad_token_id,
+            dtype=audio_codes.dtype,
+            device=audio_codes.device,
+        )
+        delayed_audio_labels = delayed_audio_inputs.clone()
+        for i in range(self.num_codebooks):
+            delayed_audio_inputs[
+                :, i, i : i + audio_codes_input.shape[2]
+            ] = audio_codes_input[:, i]
+
+        inputs_text_embeds = self.llm.get_input_embeddings()(input_ids)
+        inputs_audio_embeds = sum(
+            [
+                self.embed_tokens[codebook](delayed_audio_inputs[:, codebook])
+                for codebook in range(self.num_codebooks)
+            ]
+        )
+        # construct inputs_audio_attention_mask from audio_codes_lens, now we add the bos token and self.num_codebooks-1 padding tokens
+        # audio_codes_lens_pad = audio_codes_lens + 1 + self.num_codebooks - 1
+        # # inputs_audio_attention_mask has shape (batch_size, sequence_length)
+        # inputs_audio_attention_mask = torch.arange(
+        #     inputs_audio_embeds.shape[1], device=inputs_audio_embeds.device
+        # ).expand(inputs_audio_embeds.shape[0], -1) < audio_codes_lens_pad.unsqueeze(1).to(
+        #     inputs_audio_embeds.device
+        # )
+
+        # concatenate the text and audio embeddings
+        # ！ WAR
+        inputs_embeds = torch.cat(
+            [inputs_text_embeds, inputs_audio_embeds[:, : -(self.num_codebooks - 1)]],
+            dim=1,
+        )
+        # attention_mask = torch.cat(
+        #     [attention_mask, inputs_audio_attention_mask], dim=1
+        # )
+        # TOOD: add attention_mask to the model
+        cache = None
+        generated_audio_tokens = []
+        for i in range(max_length):
+            outputs = self.llm(
+                inputs_embeds=inputs_embeds,
+                use_cache=True,
+                past_key_values=cache,
+                output_hidden_states=True,
+                return_dict=True,
+            )
+            cache = outputs.past_key_values
+
+            last_hidden_state = outputs.hidden_states[-1].clone()
+
+            audio_logits = [
+                self.audio_lm_heads[codebook](last_hidden_state).float()
+                for codebook in range(self.num_codebooks)
+            ]
+
+            # get the last token logits
+            audio_logits = torch.stack(audio_logits, dim=-1)
+            audio_logits = audio_logits[:, -1]
+
+            # audio_logits shape (batch_size, vocab_size, num_codebooks)
+            audio_logits = (
+                audio_logits.transpose(1, 2)
+                .contiguous()
+                .view(-1, self.audio_vocab_size)
+            )
+            assert audio_logits.shape[1] == self.audio_vocab_size
+            token_ids = topk_sampling(
+                audio_logits, top_k=10, top_p=1.0, temperature=1.0
+            )
+            print(i, token_ids)
+            if self.audio_eos_token_id in token_ids:
+                break
+            token_ids = token_ids.view(-1, self.num_codebooks, 1)
+            # token_ids shape (batch_size, num_codebooks, 1)
+            generated_audio_tokens.append(token_ids)
+
+            # check if the eos token is generated
+            inputs_embeds = sum(
+                [
+                    self.embed_tokens[codebook](token_ids[:, codebook])
+                    for codebook in range(self.num_codebooks)
+                ]
+            )
+        generated_audio_tokens = torch.cat(generated_audio_tokens, dim=-1)
+
+        # real_audio_index shape (batch_size, sequence_length, num_codebooks)
+        real_audio_index = generated_audio_tokens
+        real_audio_code = torch.full(
+            (
+                real_audio_index.shape[0],
+                self.num_codebooks,
+                real_audio_index.shape[2] - self.num_codebooks + 1 - 1,
+            ),
+            self.audio_pad_token_id,
+            dtype=real_audio_index.dtype,
+            device=real_audio_index.device,
+        )
+        for i in range(self.num_codebooks):
+            real_audio_code[:, i, :] = real_audio_index[
+                :, i, i : i + real_audio_code.shape[2]
+            ]
+        # now save the real audio
+        for i in range(real_audio_code.shape[0]):
+            # get the first index of eos token, then slice the real_audio_code
+            if self.audio_eos_token_id in real_audio_code[i]:
+                eos_index = (real_audio_code[i] == self.audio_eos_token_id).nonzero(
+                    as_tuple=True
+                )[1][0]
+                real_audio_code_save = real_audio_code[i, :, : eos_index - 1]
+                print(real_audio_code_save.shape, real_audio_code[i].shape, eos_index)
+            else:
+                real_audio_code_save = real_audio_code[i]
+            self.save_audio(real_audio_code_save, audio_path_list[i])
+
+        return
 
 
 def compute_accuracy(pad_outputs, pad_targets, ignore_label):
@@ -437,3 +520,64 @@ def compute_accuracy(pad_outputs, pad_targets, ignore_label):
     )
     denominator = torch.sum(mask)
     return numerator.float() / denominator.float()
+
+
+def topk_sampling(
+    logits,
+    top_k=10,
+    top_p=1.0,
+    temperature=1.0,
+):
+    if temperature != 1.0:
+        logits = logits / temperature
+    # Top-p/top-k filtering
+    logits_filtered = top_k_top_p_filtering(
+        logits.clone(), top_k=top_k, top_p=top_p, min_tokens_to_keep=2
+    )
+    # Sample
+    probs = torch.nn.functional.softmax(logits_filtered, dim=-1)
+    tokens = torch.multinomial(probs, num_samples=1)
+
+    return tokens
+
+
+# https://github.com/microsoft/unilm/blob/master/xtune/src/transformers/modeling_utils.py
+def top_k_top_p_filtering(
+    logits, top_k=0, top_p=1.0, filter_value=-float("Inf"), min_tokens_to_keep=1
+):
+    """Filter a distribution of logits using top-k and/or nucleus (top-p) filtering
+    Args:
+        logits: logits distribution shape (batch size, vocabulary size)
+        if top_k > 0: keep only top k tokens with highest probability (top-k filtering).
+        if top_p < 1.0: keep the top tokens with cumulative probability >= top_p (nucleus filtering).
+            Nucleus filtering is described in Holtzman et al. (http://arxiv.org/abs/1904.09751)
+        Make sure we keep at least min_tokens_to_keep per batch example in the output
+    From: https://gist.github.com/thomwolf/1a5a29f6962089e871b94cbd09daf317
+    """
+    if top_k > 0:
+        top_k = min(max(top_k, min_tokens_to_keep), logits.size(-1))  # Safety check
+        # Remove all tokens with a probability less than the last token of the top-k
+        indices_to_remove = logits < torch.topk(logits, top_k)[0][..., -1, None]
+        logits[indices_to_remove] = filter_value
+
+    if top_p < 1.0:
+        sorted_logits, sorted_indices = torch.sort(logits, descending=True)
+        cumulative_probs = torch.cumsum(
+            torch.nn.functional.softmax(sorted_logits, dim=-1), dim=-1
+        )
+
+        # Remove tokens with cumulative probability above the threshold (token with 0 are kept)
+        sorted_indices_to_remove = cumulative_probs > top_p
+        if min_tokens_to_keep > 1:
+            # Keep at least min_tokens_to_keep (set to min_tokens_to_keep-1 because we add the first one below)
+            sorted_indices_to_remove[..., :min_tokens_to_keep] = 0
+        # Shift the indices to the right to keep also the first token above the threshold
+        sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+        sorted_indices_to_remove[..., 0] = 0
+
+        # scatter sorted tensors to original indexing
+        indices_to_remove = sorted_indices_to_remove.scatter(
+            1, sorted_indices, sorted_indices_to_remove
+        )
+        logits[indices_to_remove] = filter_value
+    return logits
