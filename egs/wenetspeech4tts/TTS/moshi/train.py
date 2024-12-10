@@ -1066,25 +1066,25 @@ def run(rank, world_size, args):
     # )
     optimizer.zero_grad()
 
-    # if checkpoints and "optimizer" in checkpoints:
-    #     logging.info("Loading optimizer state dict")
-    #     optimizer.load_state_dict(checkpoints["optimizer"])
+    if checkpoints and "optimizer" in checkpoints:
+        logging.info("Loading optimizer state dict")
+        optimizer.load_state_dict(checkpoints["optimizer"])
 
-    # if (
-    #     checkpoints
-    #     and "scheduler" in checkpoints
-    #     and checkpoints["scheduler"] is not None
-    # ):
-    #     logging.info("Loading scheduler state dict")
-    #     scheduler.load_state_dict(checkpoints["scheduler"])
+    if (
+        checkpoints
+        and "scheduler" in checkpoints
+        and checkpoints["scheduler"] is not None
+    ):
+        logging.info("Loading scheduler state dict")
+        scheduler.load_state_dict(checkpoints["scheduler"])
 
     if params.inf_check:
         register_inf_check_hooks(model)
 
     if params.start_batch > 0 and checkpoints and "sampler" in checkpoints:
-        # sampler_state_dict = checkpoints["sampler"]
-        sampler_state_dict = None
-        raise NotImplementedError
+        sampler_state_dict = checkpoints["sampler"]
+        # sampler_state_dict = None
+        # raise NotImplementedError
     else:
         sampler_state_dict = None
 

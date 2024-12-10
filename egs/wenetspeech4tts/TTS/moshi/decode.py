@@ -227,6 +227,14 @@ def get_parser():
     )
 
     parser.add_argument(
+        "--input-file",
+        type=str,
+        default="aishell3.txt",
+        help="""The input file for decoding.
+        """,
+    )
+
+    parser.add_argument(
         "--text-tokens",
         type=str,
         default="data/tokenized/unique_text_tokens.k2symbols",
@@ -574,27 +582,30 @@ def run(rank, world_size, args):
     #     valid_cuts, params.filter_min_duration, params.filter_max_duration
     # )
     # valid_dl = dataset.dev_dataloaders(valid_cuts)
-
-    with open("./aishell3.txt") as f:
+    with open(args.input_file, "r") as f:
         for line in f:
-            fields = line.strip().split("  ")
+            # fields = line.strip().split("  ")
+            fields = line.strip().split(" ")
             fields = [item for item in fields if item]
+            print(fields)
             assert len(fields) == 4
             prompt_text, prompt_audio, text, audio_path = fields
             logging.info(f"synthesize text: {text}")
 
+            # input_text = prompt_text + ' ' + text
             input_text = prompt_text + text
             text_tokens, _ = prepare_input_ids([input_text], tokenizer, device)
 
             audio_prompts = tokenize_audio(model.audio_tokenizer, prompt_audio)
             audio_prompts = audio_prompts[0][0].to(device)
-
+            # input_text, audio_prompts = text, None
             # synthesis
-            model.generate(
-                text_tokens.to(device),
-                audio_prompts,
-                [audio_path],
-            )
+            with torch.no_grad():
+                model.generate(
+                    text_tokens.to(device),
+                    audio_prompts,
+                    [audio_path],
+                )
 
             # samples = audio_tokenizer.decode(
             #     [(encoded_frames.transpose(2, 1), None)]

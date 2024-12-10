@@ -204,6 +204,12 @@ class SPEECH_LLM(nn.Module):
         audio_labels: (batch_size, num_codebooks, sequence_length)
         """
         # change the -23 pad token to the eos token id
+        # save audios according to audio_codes_lens
+        # print(audio_codes.shape)
+        # for i in range(audio_codes.shape[0]):
+        #     audio_code = audio_codes[i][:, : audio_codes_lens[i]]
+        #     #print(audio_code.shape)
+        #     self.save_audio(audio_code, f"real_audio_ground_{i}.wav")
         audio_codes = audio_codes.to(torch.int64)
         audio_codes = audio_codes.masked_fill(
             audio_codes == -23, self.audio_pad_token_id
@@ -301,24 +307,35 @@ class SPEECH_LLM(nn.Module):
         audio_logits = audio_logits[:, inputs_text_embeds.shape[1] :]
 
         # get the real audio from audio_logits
-        # real_audio_index = audio_logits.argmax(dim=-2)
-        # # real_audio_index shape (batch_size, sequence_length, num_codebooks)
-        # real_audio_index = real_audio_index.transpose(1, 2)
-        # real_audio_code = torch.full(
-        #     (real_audio_index.shape[0], self.num_codebooks, real_audio_index.shape[2]-self.num_codebooks+1-1),
-        #     self.audio_pad_token_id,
-        #     dtype=real_audio_index.dtype,
-        #     device=real_audio_index.device,
-        # )
-        # for i in range(self.num_codebooks):
-        #     real_audio_code[:, i, :] = real_audio_index[:, i, i : i + real_audio_code.shape[2]]
-        # # now save the real audio
+        real_audio_index = audio_logits.argmax(dim=-2)
+        # real_audio_index shape (batch_size, sequence_length, num_codebooks)
+        real_audio_index = real_audio_index.transpose(1, 2)
+        real_audio_code = torch.full(
+            (
+                real_audio_index.shape[0],
+                self.num_codebooks,
+                real_audio_index.shape[2] - self.num_codebooks + 1 - 1,
+            ),
+            self.audio_pad_token_id,
+            dtype=real_audio_index.dtype,
+            device=real_audio_index.device,
+        )
+        for i in range(self.num_codebooks):
+            real_audio_code[:, i, :] = real_audio_index[
+                :, i, i : i + real_audio_code.shape[2]
+            ]
+        # now save the real audio
+        # print(233333333333333333333333333)
         # for i in range(real_audio_code.shape[0]):
         #     # get the first index of eos token, then slice the real_audio_code
         #     eos_index = (real_audio_code[i] == self.audio_eos_token_id).nonzero(as_tuple=True)[1][0]
         #     real_audio_code_save = real_audio_code[i, :, :eos_index - 1]
         #     print(real_audio_code_save.shape, real_audio_code[i].shape, eos_index)
         #     self.save_audio(real_audio_code_save, f"real_audio_checkpoint_{i}.wav")
+
+        #     # real_audio_index_save = real_audio_index[i, :, 7:- 7]
+        #     # print(real_audio_index_save.shape, real_audio_index[i].shape, eos_index)
+        #     # self.save_audio(real_audio_index_save, f"real_audio_index_checkpoint_{i}.wav")
         # exit(0)
 
         total_loss = []
@@ -358,47 +375,60 @@ class SPEECH_LLM(nn.Module):
         audio_codes: (batch_size, num_codebooks, sequence_length)
         """
         # change the -23 pad token to the eos token id
-        audio_codes = prompt_audio_codes.to(torch.int64)
-        audio_codes = audio_codes.masked_fill(
-            audio_codes == -23, self.audio_pad_token_id
-        )
+        if prompt_audio_codes is None:
+            audio_codes_input = torch.full(
+                (input_ids.shape[0], self.num_codebooks, 1),
+                self.audio_bos_token_id,
+                dtype=torch.int64,
+                device=input_ids.device,
+            )
+        else:
+            audio_codes = prompt_audio_codes.to(torch.int64)
+            audio_codes = audio_codes.masked_fill(
+                audio_codes == -23, self.audio_pad_token_id
+            )
 
-        # add bos token to the audio codes
-        audio_codes_input = torch.cat(
-            [
-                torch.full(
-                    (audio_codes.shape[0], audio_codes.shape[1], 1),
-                    self.audio_bos_token_id,
-                    dtype=audio_codes.dtype,
-                    device=audio_codes.device,
-                ),
-                audio_codes,
-            ],
-            dim=-1,
-        )
+            # add bos token to the audio codes
+            audio_codes_input = torch.cat(
+                [
+                    torch.full(
+                        (audio_codes.shape[0], audio_codes.shape[1], 1),
+                        self.audio_bos_token_id,
+                        dtype=audio_codes.dtype,
+                        device=audio_codes.device,
+                    ),
+                    audio_codes,
+                ],
+                dim=-1,
+            )
 
         # build the delay pattern audio codes and audio labels
         # delayed shape is (batch_size, num_codebooks, sequence_length+num_codebooks-1)
         delayed_audio_inputs = torch.full(
             (
-                audio_codes.shape[0],
-                audio_codes.shape[1],
+                audio_codes_input.shape[0],
+                audio_codes_input.shape[1],
                 audio_codes_input.shape[2] + self.num_codebooks - 1,
             ),
             self.audio_pad_token_id,
-            dtype=audio_codes.dtype,
-            device=audio_codes.device,
+            dtype=audio_codes_input.dtype,
+            device=audio_codes_input.device,
         )
-        delayed_audio_labels = delayed_audio_inputs.clone()
+        # delayed_audio_labels = delayed_audio_inputs.clone()
         for i in range(self.num_codebooks):
             delayed_audio_inputs[
                 :, i, i : i + audio_codes_input.shape[2]
             ] = audio_codes_input[:, i]
 
+        audio_codes_input_complete, audio_codes_input_partial = (
+            delayed_audio_inputs[..., : audio_codes_input.shape[2]],
+            delayed_audio_inputs[..., audio_codes_input.shape[2] :],
+        )
+
         inputs_text_embeds = self.llm.get_input_embeddings()(input_ids)
         inputs_audio_embeds = sum(
             [
-                self.embed_tokens[codebook](delayed_audio_inputs[:, codebook])
+                self.embed_tokens[codebook](audio_codes_input_complete[:, codebook])
                 for codebook in range(self.num_codebooks)
             ]
         )
@@ -452,13 +482,66 @@ class SPEECH_LLM(nn.Module):
             )
             assert audio_logits.shape[1] == self.audio_vocab_size
             token_ids = topk_sampling(
-                audio_logits, top_k=10, top_p=1.0, temperature=1.0
+                audio_logits, top_k=-1, top_p=1.0, temperature=1.0
             )
             print(i, token_ids)
-            if self.audio_eos_token_id in token_ids:
-                break
+            if i < self.num_codebooks - 1:
+                assert self.audio_eos_token_id not in token_ids
             token_ids = token_ids.view(-1, self.num_codebooks, 1)
             # token_ids shape (batch_size, num_codebooks, 1)
+            # replace token_ids with groud truth
+            if i < self.num_codebooks - 1:
+                token_ids[:, i + 1 :, 0] = audio_codes_input_partial[:, i + 1 :, i]
+            generated_audio_tokens.append(token_ids)
+
+            # check if the eos token is generated
+            inputs_embeds = sum(
+                [
+                    self.embed_tokens[codebook](token_ids[:, codebook])
+                    for codebook in range(self.num_codebooks)
+                ]
+            )
+            assert token_ids.shape[0] == 1
+            if token_ids[0, 0] == self.audio_eos_token_id:
+                break
+
+        for i in range(self.num_codebooks - 2):
+            outputs = self.llm(
+                inputs_embeds=inputs_embeds,
+                use_cache=True,
+                past_key_values=cache,
+                output_hidden_states=True,
+                return_dict=True,
+            )
+            cache = outputs.past_key_values
+
+            last_hidden_state = outputs.hidden_states[-1].clone()
+
+            audio_logits = [
+                self.audio_lm_heads[codebook](last_hidden_state).float()
+                for codebook in range(self.num_codebooks)
+            ]
+
+            # get the last token logits
+            audio_logits = torch.stack(audio_logits, dim=-1)
+            audio_logits = audio_logits[:, -1]
+
+            # audio_logits shape (batch_size, vocab_size, num_codebooks)
+            audio_logits = (
+                audio_logits.transpose(1, 2)
+                .contiguous()
+                .view(-1, self.audio_vocab_size)
+            )
+            assert audio_logits.shape[1] == self.audio_vocab_size
+            token_ids = topk_sampling(
+                audio_logits, top_k=-1, top_p=1.0, temperature=1.0
+            )
+            print(i, token_ids)
+            token_ids = token_ids.view(-1, self.num_codebooks, 1)
+            token_ids[:, : i + 1, :] = self.audio_pad_token_id
+            token_ids[:, i + 1, :] = self.audio_eos_token_id
+            # token_ids shape (batch_size, num_codebooks, 1)
+            # replace token_ids with groud truth
             generated_audio_tokens.append(token_ids)
 
             # check if the eos token is generated
@@ -476,7 +559,7 @@ class SPEECH_LLM(nn.Module):
             (
                 real_audio_index.shape[0],
                 self.num_codebooks,
-                real_audio_index.shape[2] - self.num_codebooks + 1 - 1,
+                real_audio_index.shape[2] - self.num_codebooks + 1,
             ),
             self.audio_pad_token_id,
             dtype=real_audio_index.dtype,
@@ -489,14 +572,14 @@ class SPEECH_LLM(nn.Module):
         # now save the real audio
         for i in range(real_audio_code.shape[0]):
             # get the first index of eos token, then slice the real_audio_code
-            if self.audio_eos_token_id in real_audio_code[i]:
-                eos_index = (real_audio_code[i] == self.audio_eos_token_id).nonzero(
-                    as_tuple=True
-                )[1][0]
-                real_audio_code_save = real_audio_code[i, :, : eos_index - 1]
-                print(real_audio_code_save.shape, real_audio_code[i].shape, eos_index)
-            else:
-                real_audio_code_save = real_audio_code[i]
+            # if self.audio_eos_token_id in real_audio_code[i]:
+            #     eos_index = (real_audio_code[i] == self.audio_eos_token_id).nonzero(
+            #         as_tuple=True
+            #     )[1][0]
+            #     real_audio_code_save = real_audio_code[i, :, : eos_index - 1]
+            #     print(real_audio_code_save.shape, real_audio_code[i].shape, eos_index)
+            # else:
+            real_audio_code_save = real_audio_code[i]
             self.save_audio(real_audio_code_save, audio_path_list[i])
 
         return
