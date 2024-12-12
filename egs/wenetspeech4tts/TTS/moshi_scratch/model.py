@@ -276,6 +276,8 @@ class SPEECH_LLM(nn.Module):
         audio_path_list: Optional[str] = None,
         attention_mask: Optional[torch.BoolTensor] = None,
         max_length: int = 1024,
+        top_p: float = 1.0,
+        top_k: int = 10,
     ):
         """
         input_ids: (batch_size, sequence_length)
@@ -360,6 +362,8 @@ class SPEECH_LLM(nn.Module):
         # TOOD: add attention_mask to the model
         cache = None
         generated_audio_tokens = []
+        preceding_tokens = None
+        token_ids_first_codebook = None
         for i in range(max_length):
             outputs = self.llm(
                 inputs_embeds=inputs_embeds,
@@ -382,16 +386,44 @@ class SPEECH_LLM(nn.Module):
             audio_logits = audio_logits[:, -1]
 
             # audio_logits shape (batch_size, vocab_size, num_codebooks)
+            audio_logits_first_codebook, audio_logits = (
+                audio_logits[..., 0],
+                audio_logits[..., 1:],
+            )
             audio_logits = (
                 audio_logits.transpose(1, 2)
                 .contiguous()
                 .view(-1, self.audio_vocab_size)
             )
             assert audio_logits.shape[1] == self.audio_vocab_size
-            token_ids = topk_sampling(
-                audio_logits, top_k=-1, top_p=1.0, temperature=1.0
+            # argmax sampling
+            batch_size = audio_logits_first_codebook.shape[0]
+            token_ids = audio_logits.argmax(dim=-1)
+            token_ids = token_ids.view(batch_size, -1)
+            # print(i, token_ids.shape, token_ids)
+
+            audio_logits_first_codebook = audio_logits_first_codebook.view(
+                -1, self.audio_vocab_size
             )
-            print(i, token_ids)
+            preceding_tokens = (
+                torch.cat([preceding_tokens, token_ids_first_codebook], dim=-1)
+                if preceding_tokens is not None
+                else token_ids_first_codebook
+            )
+            if preceding_tokens is not None:
+                print(preceding_tokens.shape, 2333333333444444444444444444)
+            token_ids_first_codebook = topk_sampling(
+                audio_logits_first_codebook,
+                top_k=top_k,
+                top_p=top_p,
+                temperature=1.0,
+                repetition_aware_sampling=True,
+                preceding_tokens=preceding_tokens,
+            )
+            # print(i, token_ids_first_codebook)
+            token_ids = torch.cat([token_ids_first_codebook, token_ids], dim=-1)
+            print(i, token_ids, token_ids.shape, 2333333333)
+            # input()
             if i < self.num_codebooks - 1:
                 assert self.audio_eos_token_id not in token_ids
             token_ids = token_ids.view(-1, self.num_codebooks, 1)
@@ -432,6 +464,10 @@ class SPEECH_LLM(nn.Module):
             # get the last token logits
             audio_logits = torch.stack(audio_logits, dim=-1)
             audio_logits = audio_logits[:, -1]
+            audio_logits_first_codebook, audio_logits = (
+                audio_logits[..., 0],
+                audio_logits[..., 1:],
+            )
 
             # audio_logits shape (batch_size, vocab_size, num_codebooks)
             audio_logits = (
@@ -440,10 +476,17 @@ class SPEECH_LLM(nn.Module):
                 .view(-1, self.audio_vocab_size)
             )
             assert audio_logits.shape[1] == self.audio_vocab_size
-            token_ids = topk_sampling(
-                audio_logits, top_k=-1, top_p=1.0, temperature=1.0
+            # argmax sampling
+            batch_size = audio_logits_first_codebook.shape[0]
+            token_ids = audio_logits.argmax(dim=-1)
+            token_ids = token_ids.view(batch_size, -1)
+            # print(i, token_ids.shape, token_ids)
+
+            token_ids_first_level = topk_sampling(
+                audio_logits_first_codebook, top_k=top_k, top_p=top_p, temperature=1.0
             )
-            print(i, token_ids)
+            # print(i, token_ids_first_level)
+            token_ids = torch.cat([token_ids_first_level, token_ids], dim=-1)
             token_ids = token_ids.view(-1, self.num_codebooks, 1)
             token_ids[:, : i + 1, :] = self.audio_pad_token_id
             token_ids[:, i + 1, :] = self.audio_eos_token_id
@@ -517,6 +560,8 @@ def topk_sampling(
     top_k=10,
     top_p=1.0,
     temperature=1.0,
+    repetition_aware_sampling=False,
+    preceding_tokens=None,
 ):
     if temperature != 1.0:
         logits = logits / temperature
@@ -527,7 +572,31 @@ def topk_sampling(
     # Sample
     probs = torch.nn.functional.softmax(logits_filtered, dim=-1)
     tokens = torch.multinomial(probs, num_samples=1)
-
+    if repetition_aware_sampling and preceding_tokens is not None:
+        window_size = 10
+        threshold = 0.1
+        # we first generate the target code ct′
+        # by nucleus sampling with a pre-defined top-p value v. Then, we
+        # calculate the repetition ratio r of token ct′
+        # in the preceding code sequence with a window size K.
+        # If the ratio r exceeds a pre-defined repetition threshold ratio tn, we replace the target code ct′
+        # by
+        # random sampling from p(ct′
+        # |x, c<t·G,0; θAR). make sure the token is not repeated.
+        # https://arxiv.org/abs/2406.05370
+        # y: B, T
+        # token: B, 1
+        assert preceding_tokens is not None
+        if preceding_tokens.shape[1] > window_size:
+            preceding_tokens = preceding_tokens[:, -window_size:]
+        if preceding_tokens.shape[1] > 0:
+            for i, item in enumerate(preceding_tokens):
+                # check if the repeat ratio exceeds the threshold
+                if (item == tokens[i]).sum() / window_size > threshold:
+                    # replace the target code ct′ by random sampling
+                    probs = torch.nn.functional.softmax(logits[i], dim=-1)
+                    token_new = torch.multinomial(probs, num_samples=1)
+                    tokens[i] = token_new
     return tokens
 
 

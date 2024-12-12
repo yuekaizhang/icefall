@@ -594,8 +594,8 @@ def run(rank, world_size, args):
             prompt_text, prompt_audio, text, audio_path = fields
             logging.info(f"synthesize text: {text}")
 
-            # input_text = prompt_text + ' ' + text
-            input_text = prompt_text + text
+            input_text = prompt_text + " " + text
+            # input_text = prompt_text + text
             text_tokens, _ = prepare_input_ids([input_text], tokenizer, device)
 
             audio_prompts = tokenize_audio(model.audio_tokenizer, prompt_audio)
