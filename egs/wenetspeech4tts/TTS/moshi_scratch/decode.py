@@ -595,7 +595,6 @@ def run(rank, world_size, args):
             logging.info(f"synthesize text: {text}")
 
             input_text = prompt_text + " " + text
-            # input_text = prompt_text + text
             text_tokens, _ = prepare_input_ids([input_text], tokenizer, device)
 
             audio_prompts = tokenize_audio(model.audio_tokenizer, prompt_audio)
@@ -656,8 +655,10 @@ def prepare_input_ids(texts_input, tokenizer: TextTokenCollater, device: torch.d
     for text in texts_input:
         phonemes = text_tokenizer([text.strip()])[0]
         phonemes_list.append(phonemes)
+        print(text, phonemes)
 
     input_ids, text_tokens_lens = tokenizer(phonemes_list)
+
     input_ids, text_tokens_lens = input_ids.to(device), text_tokens_lens.to(device)
     # make attention mask from text_tokens_lens, shape is the same as input_ids, 1 for real token, 0 for padding
     attention_mask = (

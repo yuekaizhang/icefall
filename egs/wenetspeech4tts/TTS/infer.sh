@@ -91,11 +91,11 @@ exp_dir=exp_test/valle_test
 #       --num-epochs 20 --start-epoch 1 --start-batch 0 --accumulate-grad-steps 1 \
 #       --exp-dir ${exp_dir} --world-size ${world_size} --optimizer-name AdamW  --start-epoch 25 --input-file aishell3_test2.txt
 
-exp_dir=exp_test/valle_scratch
+exp_dir=exp_test/valle_scratch_exp2
 python3 moshi_scratch/decode.py --max-duration 120 --filter-min-duration 0.5 --filter-max-duration 14 --train-stage 1 \
       --num-buckets 6 --dtype "float32" --save-every-n 1000000000 --valid-interval 8000 \
       --share-embedding true --norm-first true --add-prenet false \
       --decoder-dim 1024 --nhead 16 --num-decoder-layers 12 --prefix-mode 1 \
-      --base-lr 0.03 --warmup-steps 20 --average-period 0 \
+      --base-lr 0.03 --warmup-steps 200 --average-period 200 \
       --num-epochs 50 --start-epoch 1 --start-batch 0 --accumulate-grad-steps 1 \
-      --exp-dir ${exp_dir} --world-size ${world_size} --optimizer-name ScaledAdam --start-epoch 4 --input-file aishell3.txt
+      --exp-dir ${exp_dir} --world-size ${world_size} --optimizer-name ScaledAdam --start-epoch 51 --input-file rev_wenetspeech4tts.txt

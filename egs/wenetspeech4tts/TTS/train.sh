@@ -14,13 +14,13 @@ else
     echo "Skipping installation."
 fi
 
-world_size=4
-exp_dir=exp_test/valle_scratch
+world_size=8
+exp_dir=exp_test/valle_scratch_exp2
 
-python3 moshi_scratch/train.py --max-duration 120 --filter-min-duration 0.5 --filter-max-duration 14 --train-stage 1 \
+python3 moshi_scratch/train.py --max-duration 300 --filter-min-duration 0.5 --filter-max-duration 14 --train-stage 1 \
       --num-buckets 6 --dtype "bfloat16" --save-every-n 1000000000 --valid-interval 8000 \
       --share-embedding true --norm-first true --add-prenet false \
       --decoder-dim 1024 --nhead 16 --num-decoder-layers 12 --prefix-mode 1 \
-      --base-lr 0.03 --warmup-steps 20 --average-period 0 \
+      --base-lr 0.001 --warmup-steps 200 --average-period 200 \
       --num-epochs 50 --start-epoch 1 --start-batch 0 --accumulate-grad-steps 1 \
-      --exp-dir ${exp_dir} --world-size ${world_size} --optimizer-name ScaledAdam
+      --exp-dir ${exp_dir} --world-size ${world_size} --optimizer-name AdamW
