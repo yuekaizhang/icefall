@@ -78,7 +78,7 @@ class SPEECH_LLM(nn.Module):
 
     def get_config(self):
         return Qwen2Config(
-            vocab_size=5000,
+            vocab_size=15000,
             hidden_size=1024,
             num_hidden_layers=12,
             num_attention_heads=16,

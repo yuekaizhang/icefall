@@ -31,7 +31,7 @@ from torchmetrics.classification import MulticlassAccuracy
 
 from icefall.utils import make_pad_mask
 
-NUM_TEXT_TOKENS = 5000
+NUM_TEXT_TOKENS = 15000
 NUM_AUDIO_TOKENS = 1024  # EnCodec RVQ bins
 
 
