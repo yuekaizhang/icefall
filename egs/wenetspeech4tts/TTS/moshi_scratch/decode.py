@@ -89,17 +89,6 @@ from compute_neural_codec_and_prepare_text_tokens import AudioTokenizer, TextTok
 from tokenizer import TextTokenCollater, get_text_token_collater
 from transformers import AutoTokenizer
 
-
-def set_batch_count(model: Union[nn.Module, DDP], batch_count: float) -> None:
-    if isinstance(model, DDP):
-        # get underlying nn.Module
-        model = model.module
-
-    for module in model.modules():
-        if hasattr(module, "batch_count"):
-            module.batch_count = batch_count
-
-
 def add_model_arguments(parser: argparse.ArgumentParser):
     parser.add_argument(
         "--decoder-dim",
@@ -107,95 +96,11 @@ def add_model_arguments(parser: argparse.ArgumentParser):
         default=1024,
         help="Embedding dimension in the decoder model.",
     )
-    parser.add_argument(
-        "--nhead",
-        type=int,
-        default=16,
-        help="Number of attention heads in the Decoder layers.",
-    )
-    parser.add_argument(
-        "--num-decoder-layers",
-        type=int,
-        default=12,
-        help="Number of Decoder layers.",
-    )
-    parser.add_argument(
-        "--scale-factor",
-        type=float,
-        default=1.0,
-        help="Model scale factor which will be assigned different meanings in different models.",
-    )
-    parser.add_argument(
-        "--norm-first",
-        type=str2bool,
-        default=True,
-        help="Pre or Post Normalization.",
-    )
-    parser.add_argument(
-        "--add-prenet",
-        type=str2bool,
-        default=False,
-        help="Whether add PreNet after Inputs.",
-    )
-
-    parser.add_argument(
-        "--prefix-mode",
-        type=int,
-        default=0,
-        help="The mode for how to prefix VALL-E NAR Decoder, "
-        "0: no prefix, 1: 0 to random, 2: random to random, 4: chunk of pre or post utterance.",
-    )
-    parser.add_argument(
-        "--share-embedding",
-        type=str2bool,
-        default=True,
-        help="Share the parameters of the output projection layer with the parameters of the acoustic embedding.",
-    )
-    parser.add_argument(
-        "--prepend-bos",
-        type=str2bool,
-        default=False,
-        help="Whether prepend <BOS> to the acoustic tokens -> AR Decoder inputs.",
-    )
-    parser.add_argument(
-        "--num-quantizers",
-        type=int,
-        default=8,
-        help="Number of Audio/Semantic quantization layers.",
-    )
 
 
 def get_parser():
     parser = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
-    )
-
-    parser.add_argument(
-        "--world-size",
-        type=int,
-        default=1,
-        help="Number of GPUs for DDP training.",
-    )
-
-    parser.add_argument(
-        "--master-port",
-        type=int,
-        default=12354,
-        help="Master port to use for DDP training.",
-    )
-
-    parser.add_argument(
-        "--tensorboard",
-        type=str2bool,
-        default=True,
-        help="Should various information be logged in tensorboard.",
-    )
-
-    parser.add_argument(
-        "--num-epochs",
-        type=int,
-        default=20,
-        help="Number of epochs to train.",
     )
 
     parser.add_argument(
@@ -243,29 +148,6 @@ def get_parser():
     )
 
     parser.add_argument(
-        "--optimizer-name",
-        type=str,
-        default="ScaledAdam",
-        help="The optimizer.",
-    )
-    parser.add_argument(
-        "--scheduler-name",
-        type=str,
-        default="Eden",
-        help="The scheduler.",
-    )
-    parser.add_argument(
-        "--base-lr", type=float, default=0.05, help="The base learning rate."
-    )
-    parser.add_argument(
-        "--warmup-steps",
-        type=int,
-        default=200,
-        help="""Number of steps that affects how rapidly the learning rate
-        decreases. We suggest not to change this.""",
-    )
-
-    parser.add_argument(
         "--seed",
         type=int,
         default=42,
@@ -273,105 +155,18 @@ def get_parser():
     )
 
     parser.add_argument(
-        "--inf-check",
-        type=str2bool,
-        default=False,
-        help="Add hooks to check for infinite module outputs and gradients.",
-    )
-
-    parser.add_argument(
-        "--save-every-n",
-        type=int,
-        default=10000,
-        help="""Save checkpoint after processing this number of batches"
-        periodically. We save checkpoint to exp-dir/ whenever
-        params.batch_idx_train %% save_every_n == 0. The checkpoint filename
-        has the form: f'exp-dir/checkpoint-{params.batch_idx_train}.pt'
-        Note: It also saves checkpoint to `exp-dir/epoch-xxx.pt` at the
-        end of each epoch where `xxx` is the epoch number counting from 0.
-        """,
-    )
-    parser.add_argument(
-        "--valid-interval",
-        type=int,
-        default=10000,
-        help="""Run validation if batch_idx %% valid_interval is 0.""",
-    )
-
-    parser.add_argument(
-        "--keep-last-k",
-        type=int,
-        default=20,
-        help="""Only keep this number of checkpoints on disk.
-        For instance, if it is 3, there are only 3 checkpoints
-        in the exp-dir with filenames `checkpoint-xxx.pt`.
-        It does not affect checkpoints with name `epoch-xxx.pt`.
-        """,
-    )
-
-    parser.add_argument(
-        "--average-period",
-        type=int,
-        default=0,
-        help="""Update the averaged model, namely `model_avg`, after processing
-        this number of batches. `model_avg` is a separate version of model,
-        in which each floating-point parameter is the average of all the
-        parameters from the start of training. Each time we take the average,
-        we do: `model_avg = model * (average_period / batch_idx_train) +
-            model_avg * ((batch_idx_train - average_period) / batch_idx_train)`.
-        """,
-    )
-
-    parser.add_argument(
-        "--accumulate-grad-steps",
-        type=int,
-        default=1,
-        help="""update gradient when batch_idx_train %% accumulate_grad_steps == 0.
-        """,
-    )
-
-    parser.add_argument(
-        "--dtype",
-        type=str,
-        default="float32",
-        help="Training dtype: float32 bfloat16 float16.",
-    )
-
-    parser.add_argument(
-        "--filter-min-duration",
+        "--top-p",
         type=float,
-        default=0.0,
-        help="Keep only utterances with duration > this.",
-    )
-    parser.add_argument(
-        "--filter-max-duration",
-        type=float,
-        default=20.0,
-        help="Keep only utterances with duration < this.",
+        default=1.0,
+        help="The top-p value for sampling",
     )
 
     parser.add_argument(
-        "--train-stage",
+        "--top-k",
         type=int,
-        default=0,
-        help="""0: train all modules, For VALL-E, support 1: AR Decoder 2: NAR Decoder(s)
-        """,
+        default=50,
+        help="The top-p value for sampling",
     )
-
-    parser.add_argument(
-        "--visualize",
-        type=str2bool,
-        default=False,
-        help="visualize model results in eval step.",
-    )
-
-    parser.add_argument(
-        "--oom-check",
-        type=str2bool,
-        default=False,
-        help="perform OOM check on dataloader batches before starting training.",
-    )
-
     add_model_arguments(parser)
 
     return parser
@@ -388,38 +183,10 @@ def get_params() -> AttributeDict:
 
     Explanation of options saved in `params`:
 
-        - best_train_loss: Best training loss so far. It is used to select
-                           the model that has the lowest training loss. It is
-                           updated during the training.
-
-        - best_valid_loss: Best validation loss so far. It is used to select
-                           the model that has the lowest validation loss. It is
-                           updated during the training.
-
-        - best_train_epoch: It is the epoch that has the best training loss.
-
-        - best_valid_epoch: It is the epoch that has the best validation loss.
-
-        - batch_idx_train: Used to writing statistics to tensorboard. It
-                           contains number of batches trained so far across
-                           epochs.
-
-        - log_interval:  Print training loss if batch_idx % log_interval` is 0
-
-        - reset_interval: Reset statistics if batch_idx % reset_interval is 0
-
-        - valid_interval:  Run validation if batch_idx % valid_interval is 0
+    - `env_info`: Information about the environment.
     """
     params = AttributeDict(
         {
-            "best_train_loss": float("inf"),
-            "best_valid_loss": float("inf"),
-            "best_train_epoch": -1,
-            "best_valid_epoch": -1,
-            "batch_idx_train": 0,
-            "log_interval": 1,
-            "reset_interval": 200,
-            "valid_interval": 10000,
             "env_info": get_env_info(),
         }
     )
@@ -478,58 +245,7 @@ def load_checkpoint_if_available(
         optimizer=optimizer,
         scheduler=scheduler,
     )
-
-    saved_stage = saved_params.get("train_stage", 0)
-    if params.train_stage != saved_stage:
-        # switch training stage
-        if params.train_stage and saved_stage:  # switch between 1 and 2
-            params.start_epoch = 1
-            params.start_batch = 0
-        else:
-            # switch between 0 and 1/2
-            assert params.num_epochs >= params.start_epoch
-            params.batch_idx_train = saved_params["batch_idx_train"]
-
-        for key in ["optimizer", "grad_scaler", "sampler"]:
-            if key in saved_params:
-                saved_params.pop(key)
-
-        # when base on stage 0, we keep scheduler
-        if saved_stage != 0:
-            for key in ["scheduler"]:
-                if key in saved_params:
-                    saved_params.pop(key)
-
-        best_train_filename = params.exp_dir / "best-train-loss.pt"
-        if best_train_filename.is_file():
-            copyfile(
-                src=best_train_filename,
-                dst=params.exp_dir / f"best-train-loss-stage{saved_stage}.pt",
-            )
-
-        best_valid_filename = params.exp_dir / "best-valid-loss.pt"
-        if best_valid_filename.is_file():
-            copyfile(
-                src=best_valid_filename,
-                dst=params.exp_dir / f"best-valid-loss-stage{saved_stage}.pt",
-            )
-    else:
-
-        keys = [
-            "best_train_epoch",
-            "best_valid_epoch",
-            "batch_idx_train",
-            "best_train_loss",
-            "best_valid_loss",
-        ]
-        for k in keys:
-            params[k] = saved_params[k]
-
-        if params.start_batch > 0:
-            if "cur_epoch" in saved_params:
-                params["start_epoch"] = saved_params["cur_epoch"]
-
-    return saved_params
+    return saved_params, filename
 
 
 def run(rank, world_size, args):
@@ -556,67 +272,56 @@ def run(rank, world_size, args):
     device = torch.device("cuda")
     logging.info(f"Device: {device}")
 
-    # tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-0.5B-Instruct")
     tokenizer = get_text_token_collater(params.text_tokens)
+    audio_tokenizer = AudioTokenizer()
     logging.info(params)
     logging.info("About to create model")
 
     model = SPEECH_LLM()
-
-    with open(f"{params.exp_dir}/model.txt", "w") as f:
-        print(model)
-        print(model, file=f)
-
-    num_param = sum([p.numel() for p in model.parameters()])
-    logging.info(f"Number of model parameters: {num_param}")
-
-    assert params.start_epoch > 0, params.start_epoch
-    model_avg = None
-    checkpoints = load_checkpoint_if_available(
-        params=params, model=model, model_avg=model_avg
+    checkpoints, filename = load_checkpoint_if_available(
+        params=params, model=model, model_avg=None
     )
-
     model.to(device)
+    # get the basename of input_file
+    label_base = Path(args.input_file).stem
+    audio_save_dir = f"{params.exp_dir}/{label_base}-{filename.stem}_wavs-top-p-{params.top_p}-top-k-{params.top_k}"
+    os.makedirs(audio_save_dir, exist_ok=True)
 
-    # dataset = TtsDataModule(args)
-    # valid_cuts = dataset.dev_cuts()
-    # valid_cuts = filter_short_and_long_utterances(
-    #     valid_cuts, params.filter_min_duration, params.filter_max_duration
-    # )
-    # valid_dl = dataset.dev_dataloaders(valid_cuts)
     with open(args.input_file, "r") as f:
         for line in f:
             # fields = line.strip().split("  ")
-            fields = line.strip().split(" ")
+            # fields = line.strip().split(" ")
+            # fields = [item for item in fields if item]
+            # assert len(fields) == 4
+            # prompt_text, prompt_audio, text, audio_path = fields
+            fields = line.strip().split("|")
             fields = [item for item in fields if item]
-            print(fields)
             assert len(fields) == 4
-            prompt_text, prompt_audio, text, audio_path = fields
+            audio_path, prompt_text, prompt_audio, text = fields
+
+
             logging.info(f"synthesize text: {text}")
 
             input_text = prompt_text + " " + text
             text_tokens, _ = prepare_input_ids([input_text], tokenizer, device)
-
-            audio_prompts = tokenize_audio(model.audio_tokenizer, prompt_audio)
+   
+            audio_prompts = tokenize_audio(audio_tokenizer, prompt_audio)
             audio_prompts = audio_prompts[0][0].to(device)
-            # input_text, audio_prompts = text, None
-            # synthesis
+
             with torch.no_grad():
-                model.generate(
+                generated_audio_tokens_shift_back = model.generate(
                     text_tokens.to(device),
                     audio_prompts,
                     [audio_path],
+                    top_p=params.top_p,
+                    top_k=params.top_k,
                 )
-
-            # samples = audio_tokenizer.decode(
-            #     [(encoded_frames.transpose(2, 1), None)]
-            # )
-            # # store
-            # # save audio path into args.output_dir + audio_path
-            # audio_path = f"{args.output_dir}/{audio_path}"
-            # # mkdir -p
-            # os.makedirs(os.path.dirname(audio_path), exist_ok=True)
-            # torchaudio.save(audio_path, samples[0].cpu(), 24000)
+            batch_size = 1
+            for i in range(batch_size):
+                real_audio_code_save = generated_audio_tokens_shift_back[i]
+                audio_base_name = Path(audio_path).stem
+                audio_save_path = f"{audio_save_dir}/{audio_base_name}.wav"
+                save_audio(real_audio_code_save, audio_tokenizer, audio_save_path)
 
     logging.info("Done!")
 
@@ -632,6 +337,11 @@ def tokenize_audio(tokenizer: AudioTokenizer, audio_path: str):
         encoded_frames = tokenizer.encode(wav)
     return encoded_frames
 
+def save_audio(audio_codes, audio_tokenizer, path):
+    audio_code = audio_codes.unsqueeze(0)
+    audio_code = audio_code.to(torch.int64)
+    samples_org = audio_tokenizer.decode([(audio_code, None)])
+    torchaudio.save(path, samples_org[0].cpu(), 24000)
 
 def prepare_input_ids(texts_input, tokenizer: TextTokenCollater, device: torch.device):
     """Parse batch data"""
@@ -678,8 +388,6 @@ def main():
     TtsDataModule.add_arguments(parser)
     args = parser.parse_args()
     args.exp_dir = Path(args.exp_dir)
-
-    world_size = args.world_size
 
     run(rank=0, world_size=1, args=args)
 

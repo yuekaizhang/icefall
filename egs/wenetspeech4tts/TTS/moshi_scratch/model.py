@@ -3,7 +3,6 @@ from typing import Optional
 
 import torch
 import torchaudio
-from compute_neural_codec_and_prepare_text_tokens import AudioTokenizer
 from torch import nn
 from torch.nn import CrossEntropyLoss
 from torchmetrics.classification import MulticlassAccuracy
@@ -74,8 +73,6 @@ class SPEECH_LLM(nn.Module):
             ignore_index=IGNORE_TOKEN_ID,
         )
 
-        self.audio_tokenizer = AudioTokenizer()
-
     def get_config(self):
         return Qwen2Config(
             vocab_size=15000,
@@ -86,12 +83,6 @@ class SPEECH_LLM(nn.Module):
             intermediate_size=2048,
             max_position_embeddings=4096,
         )
-
-    def save_audio(self, audio_codes, path):
-        audio_code = audio_codes.unsqueeze(0)
-        audio_code = audio_code.to(torch.int64)
-        samples_org = self.audio_tokenizer.decode([(audio_code, None)])
-        torchaudio.save(path, samples_org[0].cpu(), 24000)
 
     def forward(
         self,
@@ -190,6 +181,14 @@ class SPEECH_LLM(nn.Module):
             inputs_audio_embeds.device
         )
 
+        # separate postion_ids for text and audio, then concatenate them
+        position_ids = torch.arange(
+            inputs_text_embeds.shape[1], device=inputs_text_embeds.device
+        ).unsqueeze(0)
+        position_ids_audio = torch.arange(
+            inputs_audio_embeds.shape[1], device=inputs_audio_embeds.device
+        ).unsqueeze(0)
+        position_ids = torch.cat([position_ids, position_ids_audio], dim=1)
         # concatenate the text and audio embeddings
         inputs_embeds = torch.cat([inputs_text_embeds, inputs_audio_embeds], dim=1)
         attention_mask = torch.cat([attention_mask, inputs_audio_attention_mask], dim=1)
@@ -197,6 +196,7 @@ class SPEECH_LLM(nn.Module):
         model_outputs = self.llm(
             attention_mask=attention_mask,
             inputs_embeds=inputs_embeds,
+            position_ids=None,
             return_dict=True,
             output_hidden_states=True,
         )
@@ -266,7 +266,7 @@ class SPEECH_LLM(nn.Module):
                 top_k_acc = self.audio_accuracy_metric(logits.detach(), labels).item()
                 top_k_acc_list.append(top_k_acc)
 
-        total_loss_value = sum(total_loss)
+        total_loss_value = 100 * total_loss[0] + sum(total_loss[1:])
         return total_loss_value, total_loss, top_k_acc_list
 
     def generate(
@@ -339,6 +339,14 @@ class SPEECH_LLM(nn.Module):
             ]
         )
         # TODO: consider batch_size > 1, we need to add masks
+        position_ids = torch.arange(
+            inputs_text_embeds.shape[1], device=inputs_text_embeds.device
+        ).unsqueeze(0)
+        position_ids_audio = torch.arange(
+            inputs_audio_embeds.shape[1], device=inputs_audio_embeds.device
+        ).unsqueeze(0)
+        position_ids = torch.cat([position_ids, position_ids_audio], dim=1)
+
         inputs_embeds = torch.cat(
             [inputs_text_embeds, inputs_audio_embeds],
             dim=1,
@@ -353,25 +361,13 @@ class SPEECH_LLM(nn.Module):
                 inputs_embeds=inputs_embeds,
                 use_cache=True,
                 past_key_values=kv_cache,
+                position_ids=None,
                 output_hidden_states=True,
                 return_dict=True,
             )
             kv_cache = outputs.past_key_values
-            print(
-                "The shape of kv_cache is: ",
-                kv_cache[0][0].shape,
-                "the decoding step is: ",
-                i,
-            )
 
             last_hidden_state = outputs.hidden_states[-1].clone()
-            print(
-                "The shape of last_hidden_state is: ",
-                last_hidden_state.shape,
-                "the decoding step is: ",
-                i,
-            )
-
             audio_logits = [
                 self.audio_lm_heads[codebook](last_hidden_state).float()
                 for codebook in range(self.num_codebooks)
@@ -404,13 +400,6 @@ class SPEECH_LLM(nn.Module):
                 if preceding_tokens is not None
                 else token_ids_first_codebook
             )
-            if preceding_tokens is not None:
-                print(
-                    "The shape of preceding_tokens is: ",
-                    preceding_tokens.shape,
-                    "the decoding step is: ",
-                    i,
-                )
 
             token_ids_first_codebook = topk_sampling(
                 audio_logits_first_codebook,
@@ -452,6 +441,9 @@ class SPEECH_LLM(nn.Module):
                     for codebook in range(self.num_codebooks)
                 ]
             )
+            # new position_ids[:, -1:] + 1
+            position_ids = position_ids[:, -1:].clone() + 1
+
             # check if the eos token is generated
             if not enter_break_stage:
                 if token_ids[0, 0] == self.audio_eos_token_id:
@@ -478,11 +470,7 @@ class SPEECH_LLM(nn.Module):
                 :, i, i : i + generated_audio_tokens_shift_back.shape[2]
             ]
 
-        for i in range(batch_size):
-            real_audio_code_save = generated_audio_tokens_shift_back[i]
-            self.save_audio(real_audio_code_save, audio_path_list[i])
-
-        return
+        return generated_audio_tokens_shift_back
 
 
 def compute_accuracy(pad_outputs, pad_targets, ignore_label):
