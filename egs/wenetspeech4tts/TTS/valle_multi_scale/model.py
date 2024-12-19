@@ -397,7 +397,7 @@ class SPEECH_LLM(nn.Module):
                 )
                 audio_logits = self.audio_lm_heads[i](depth_model_outputs.hidden_states[-1])  # shape (B, 1, audio_vocab_size)
                 audio_logits = audio_logits.squeeze(1)
-
+                preceding_tokens = None
                 last_ids = topk_sampling(
                     audio_logits,
                     top_k=top_k,
