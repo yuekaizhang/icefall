@@ -337,7 +337,7 @@ class SPEECH_LLM(nn.Module):
         inputs_audio_embeds = sum(
             [
                 self.embed_tokens[codebook](
-                    delayed_audio_inputs_all_real_tokens[:, codebook]
+                    audio_codes_input[:, codebook]
                 )
                 for codebook in range(self.num_codebooks)
             ]
@@ -372,12 +372,12 @@ class SPEECH_LLM(nn.Module):
             kv_cache = outputs.past_key_values
 
             last_hidden_state = outputs.hidden_states[-1].clone()
-            last_hidden_state = last_hidden_state[:, -1:]
+            last_hidden_state = last_hidden_state[:, -1:] # shape (B, 1, hidden_size)
 
             dep_hidden_states = [self.depth_linear_in[i](last_hidden_state) for i in range(self.num_codebooks)]
             # start from the audio bos token B,num_codebooks,1
             last_ids = torch.full(
-                (batch_size, self.num_codebooks, 1),
+                (batch_size, 1),
                 self.audio_bos_token_id,
                 dtype=torch.long,
                 device=last_hidden_state.device,
@@ -385,7 +385,7 @@ class SPEECH_LLM(nn.Module):
             next_ids = []
             depth_kv_cache = None
             for i in range(self.num_codebooks):
-                dep_input_embeds = self.dep_embed_tokens[i](last_ids[:, i])
+                dep_input_embeds = self.dep_embed_tokens[i](last_ids)
                 dep_input_embeds += last_hidden_state
                 
                 depth_model_outputs = self.depth_llm(
@@ -395,85 +395,37 @@ class SPEECH_LLM(nn.Module):
                     use_cache=True,
                     past_key_values=depth_kv_cache,
                 )
-                audio_logits = self.audio_lm_heads[i](depth_model_outputs.hidden_states[-1]) 
+                audio_logits = self.audio_lm_heads[i](depth_model_outputs.hidden_states[-1])  # shape (B, 1, audio_vocab_size)
+                audio_logits = audio_logits.squeeze(1)
 
-            # # hard code the ras sampling windown size
-            # preceding_tokens = (
-            #     torch.cat([preceding_tokens, token_ids_first_codebook], dim=-1)
-            #     if preceding_tokens is not None
-            #     else token_ids_first_codebook
-            # )
-
-            token_ids_first_codebook = topk_sampling(
-                audio_logits_first_codebook,
-                top_k=top_k,
-                top_p=top_p,
-                temperature=1.0,
-                repetition_aware_sampling=True,
-                preceding_tokens=preceding_tokens,
-            )
-            token_ids = torch.cat(
-                [token_ids_first_codebook, token_ids_other_codebook], dim=-1
-            )
-
-            # For first num_codebooks-1 steps, we need to fill some tokens with prompt audio tokens
-            if i < self.num_codebooks - 1:
-                token_ids[:, i + 1 :] = delayed_audio_inputs_real_token_with_pad_tokens[
-                    :, i + 1 :, i
-                ].squeeze(-1)
-                assert self.audio_eos_token_id not in token_ids
-            # For the last num_codebooks-2 steps, we need to fill some tokens with pad tokens
-            # We don't need to compute the final step, since it would generate the eos token only
-            if enter_break_stage:
-                print("The predicted tokens are: ", token_ids)
-                token_ids[
-                    :,
-                    :last_steps,
-                ] = self.audio_pad_token_id
-                token_ids[
-                    :,
-                    last_steps,
-                ] = self.audio_eos_token_id
-                print("The changed predicted tokens are: ", token_ids)
-
-            generated_audio_tokens.append(token_ids)
-
-            inputs_embeds = sum(
-                [
-                    self.embed_tokens[codebook](token_ids[:, codebook].unsqueeze(-1))
-                    for codebook in range(self.num_codebooks)
-                ]
-            )
-            # new position_ids[:, -1:] + 1
-            position_ids = position_ids[:, -1:].clone() + 1
-
-            # check if the eos token is generated
-            if not enter_break_stage:
-                if token_ids[0, 0] == self.audio_eos_token_id:
-                    enter_break_stage = True
-            if enter_break_stage:
-                if last_steps == self.num_codebooks - 2:
+                last_ids = topk_sampling(
+                    audio_logits,
+                    top_k=top_k,
+                    top_p=top_p,
+                    temperature=1.0,
+                    repetition_aware_sampling=True,
+                    preceding_tokens=preceding_tokens,
+                )
+                assert last_ids.shape[0] == 1, "WAR: The batch size should be 1"
+                if last_ids[0, 0] == self.audio_eos_token_id:
+                    assert i == 0, "Only the first codebook can generate the eos token"
                     break
-                else:
-                    last_steps += 1
+                next_ids.append(last_ids)
+                depth_kv_cache = depth_model_outputs.past_key_values
 
-        generated_audio_tokens = torch.stack(generated_audio_tokens, dim=-1)
-        generated_audio_tokens_shift_back = torch.full(
-            (
-                generated_audio_tokens.shape[0],
-                self.num_codebooks,
-                generated_audio_tokens.shape[2] - self.num_codebooks + 1,
-            ),
-            self.audio_pad_token_id,
-            dtype=generated_audio_tokens.dtype,
-            device=generated_audio_tokens.device,
-        )
-        for i in range(self.num_codebooks):
-            generated_audio_tokens_shift_back[:, i, :] = generated_audio_tokens[
-                :, i, i : i + generated_audio_tokens_shift_back.shape[2]
-            ]
-
-        return generated_audio_tokens_shift_back
+            if next_ids:
+                next_ids = torch.cat(next_ids, dim=-1) # shape (B, num_codebooks)
+                generated_audio_tokens.append(next_ids)
+                inputs_embeds = sum(
+                    [
+                        self.embed_tokens[codebook](next_ids[:, codebook].unsqueeze(-1))
+                        for codebook in range(self.num_codebooks)
+                    ]
+                )
+            else:
+                break
+        generated_audio_tokens = torch.stack(generated_audio_tokens, dim=-1) # shape (B, num_codebooks, max_length)
+        return generated_audio_tokens
 
 
 def compute_accuracy(pad_outputs, pad_targets, ignore_label):
