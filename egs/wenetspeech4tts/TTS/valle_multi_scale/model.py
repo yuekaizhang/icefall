@@ -148,6 +148,52 @@ class SPEECH_LLM(nn.Module):
             dim=-1,
         )
 
+
+        depth_audio_codes_input = torch.cat(
+            [
+                audio_codes,
+                torch.full(
+                    (audio_codes.shape[0], audio_codes.shape[1], 1),
+                    self.audio_pad_token_id,
+                    dtype=audio_codes.dtype,
+                    device=audio_codes.device,
+                ),
+
+            ],
+            dim=-1,
+        )
+        for i in range(len(audio_codes_lens)):
+            depth_audio_codes_input[i, :, audio_codes_lens[i]] = self.audio_bos_token_id
+
+        depth_audio_codes_input = torch.cat(
+            [
+                torch.full(
+                    (audio_codes.shape[0], 1, depth_audio_codes_input.shape[2]),
+                    self.audio_bos_token_id,
+                    dtype=audio_codes.dtype,
+                    device=audio_codes.device,
+                ),
+                depth_audio_codes_input[:, :-1], # we don't need the last level token as input
+            ],
+            dim=1,
+        )
+
+        # add eos token to the audio labels
+        audio_labels = torch.cat(
+            [
+                audio_codes,
+                torch.full(
+                    (audio_codes.shape[0], audio_codes.shape[1], 1),
+                    self.audio_pad_token_id,
+                    dtype=audio_codes.dtype,
+                    device=audio_codes.device,
+                ),
+            ],
+            dim=-1,
+        )
+        for i in range(len(audio_codes_lens)):
+            audio_labels[i, :, audio_codes_lens[i]] = self.audio_eos_token_id
+
         inputs_text_embeds = self.temporal_llm.get_input_embeddings()(input_ids)
         inputs_audio_embeds = sum(
             [
@@ -193,7 +239,7 @@ class SPEECH_LLM(nn.Module):
         dep_hidden_states = [self.depth_linear_in[i](last_hidden_state) for i in range(self.num_codebooks)] # shape [(B, T, dep_hidden_size)] * num_codebooks
         # there are [BxT, num_codebooks] input_ids --> [BxT, num_codebooks, dep_hidden_size]
         for i in range(self.num_codebooks):
-            dep_input_embeds = self.dep_embed_tokens[i](audio_codes_input[:, i]) # B, T, dep_hidden_size
+            dep_input_embeds = self.dep_embed_tokens[i](depth_audio_codes_input[:, i]) # B, T, dep_hidden_size
             dep_hidden_states[i] += dep_input_embeds
         # dep_hidden_input shape (BxT, num_codebooks, dep_hidden_size)
         dep_hidden_input = torch.stack(dep_hidden_states, dim=2) # B, T, num_codebooks, dep_hidden_size 
@@ -217,25 +263,31 @@ class SPEECH_LLM(nn.Module):
         audio_logits = torch.stack(audio_logits, dim=-1)
         batch_size = audio_codes_input.shape[0]
         audio_logits = audio_logits.view(batch_size, -1, self.audio_vocab_size, self.num_codebooks)
-
-        # we don't need to compute the last step, since it would generate the eos token only
-        audio_logits = audio_logits[:, :-1]
+        #print("audio_logits shape: ", audio_logits.shape)
+        #print("audio_labels shape: ", audio_labels.shape)
 
         
         total_loss = []
         top_k_acc_list = []
 
         # replace the delay audio labels' pad token with the IGNORE_TOKEN_ID
-        audio_labels = audio_codes.masked_fill(
-            audio_codes == self.audio_pad_token_id, IGNORE_TOKEN_ID
+        audio_labels = audio_labels.masked_fill(
+            audio_labels == self.audio_pad_token_id, IGNORE_TOKEN_ID
         )
+        #print("audio_labels shape: ", audio_labels.shape)
+        assert audio_labels.shape[1] == self.num_codebooks
+        audio_labels[:, 1:, -1] = IGNORE_TOKEN_ID
+        #print("audio_labels shape: ", audio_labels.shape, 23333333333)
 
         for i in range(self.num_codebooks):
             logits = audio_logits[:, :, :, i]
             labels = audio_labels[:, i]
+            #print("labels shape: ", labels.shape)
 
             logits = logits.contiguous().view(-1, self.audio_vocab_size)
             labels = labels.contiguous().view(-1)
+            #print("logits shape: ", logits.shape)
+            #print("labels shape: ", labels.shape)
 
             loss = self.loss_fct(logits, labels)
             total_loss.append(loss)
@@ -281,31 +333,6 @@ class SPEECH_LLM(nn.Module):
             dim=-1,
         )
 
-        # build the delay pattern audio codes
-        # delayed shape is (batch_size, num_codebooks, sequence_length+num_codebooks-1)
-        delayed_audio_inputs = torch.full(
-            (
-                audio_codes_input.shape[0],
-                audio_codes_input.shape[1],
-                audio_codes_input.shape[2] + self.num_codebooks - 1,
-            ),
-            self.audio_pad_token_id,
-            dtype=audio_codes_input.dtype,
-            device=audio_codes_input.device,
-        )
-        for i in range(self.num_codebooks):
-            delayed_audio_inputs[
-                :, i, i : i + audio_codes_input.shape[2]
-            ] = audio_codes_input[:, i]
-
-        (
-            delayed_audio_inputs_all_real_tokens,
-            delayed_audio_inputs_real_token_with_pad_tokens,
-        ) = (
-            delayed_audio_inputs[..., : audio_codes_input.shape[2]],
-            delayed_audio_inputs[..., audio_codes_input.shape[2] :],
-        )
-
         inputs_text_embeds = self.temporal_llm.get_input_embeddings()(input_ids)
         inputs_audio_embeds = sum(
             [
@@ -316,13 +343,13 @@ class SPEECH_LLM(nn.Module):
             ]
         )
         # TODO: consider batch_size > 1, we need to add masks
-        position_ids = torch.arange(
-            inputs_text_embeds.shape[1], device=inputs_text_embeds.device
-        ).unsqueeze(0)
-        position_ids_audio = torch.arange(
-            inputs_audio_embeds.shape[1], device=inputs_audio_embeds.device
-        ).unsqueeze(0)
-        position_ids = torch.cat([position_ids, position_ids_audio], dim=1)
+        # position_ids = torch.arange(
+        #     inputs_text_embeds.shape[1], device=inputs_text_embeds.device
+        # ).unsqueeze(0)
+        # position_ids_audio = torch.arange(
+        #     inputs_audio_embeds.shape[1], device=inputs_audio_embeds.device
+        # ).unsqueeze(0)
+        # position_ids = torch.cat([position_ids, position_ids_audio], dim=1)
 
         inputs_embeds = torch.cat(
             [inputs_text_embeds, inputs_audio_embeds],
@@ -331,8 +358,8 @@ class SPEECH_LLM(nn.Module):
 
         kv_cache, preceding_tokens, token_ids_first_codebook = None, None, None
         generated_audio_tokens = []
-        last_steps = 0
-        enter_break_stage = False
+        # last_step_codes B,Num_codebooks, 1
+        # last_step_codes = audio_codes_input[:, :, -1:]
         for i in range(max_length):
             outputs = self.temporal_llm(
                 inputs_embeds=inputs_embeds,
@@ -345,38 +372,37 @@ class SPEECH_LLM(nn.Module):
             kv_cache = outputs.past_key_values
 
             last_hidden_state = outputs.hidden_states[-1].clone()
-            audio_logits = [
-                self.audio_lm_heads[codebook](last_hidden_state).float()
-                for codebook in range(self.num_codebooks)
-            ]
+            last_hidden_state = last_hidden_state[:, -1:]
 
-            # get the last token logits
-            audio_logits = [audio_logit[:, -1] for audio_logit in audio_logits]
-
-            audio_logits_first_codebook = audio_logits[0]  # B, Vocab
-            audio_logits_first_codebook = audio_logits_first_codebook.view(
-                -1, self.audio_vocab_size
+            dep_hidden_states = [self.depth_linear_in[i](last_hidden_state) for i in range(self.num_codebooks)]
+            # start from the audio bos token B,num_codebooks,1
+            last_ids = torch.full(
+                (batch_size, self.num_codebooks, 1),
+                self.audio_bos_token_id,
+                dtype=torch.long,
+                device=last_hidden_state.device,
             )
+            next_ids = []
+            depth_kv_cache = None
+            for i in range(self.num_codebooks):
+                dep_input_embeds = self.dep_embed_tokens[i](last_ids[:, i])
+                dep_input_embeds += last_hidden_state
+                
+                depth_model_outputs = self.depth_llm(
+                    inputs_embeds=dep_input_embeds,
+                    return_dict=True,
+                    output_hidden_states=True,
+                    use_cache=True,
+                    past_key_values=depth_kv_cache,
+                )
+                audio_logits = self.audio_lm_heads[i](depth_model_outputs.hidden_states[-1]) 
 
-            audio_logits_other_codebooks = torch.stack(
-                audio_logits[1:], dim=-1
-            )  # B, Vocab, num_codebooks-1
-            audio_logits_other_codebooks = (
-                audio_logits_other_codebooks.transpose(1, 2)
-                .contiguous()
-                .view(-1, self.audio_vocab_size)
-            )
-            token_ids_other_codebook = audio_logits_other_codebooks.argmax(dim=-1)
-            token_ids_other_codebook = token_ids_other_codebook.view(
-                batch_size, -1
-            )  # B, num_codebooks-1
-
-            # hard code the ras sampling windown size
-            preceding_tokens = (
-                torch.cat([preceding_tokens, token_ids_first_codebook], dim=-1)
-                if preceding_tokens is not None
-                else token_ids_first_codebook
-            )
+            # # hard code the ras sampling windown size
+            # preceding_tokens = (
+            #     torch.cat([preceding_tokens, token_ids_first_codebook], dim=-1)
+            #     if preceding_tokens is not None
+            #     else token_ids_first_codebook
+            # )
 
             token_ids_first_codebook = topk_sampling(
                 audio_logits_first_codebook,
