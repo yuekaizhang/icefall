@@ -89,10 +89,20 @@ class TextTokenCollater:
             + [self.pad_symbol] * (max_len - len(seq))
             for seq in tokens_seqs
         ]
+        # [[self.token2idx[token] for token in seq if token in self.token2idx] for seq in seqs]
+        tokens_list = []
+        for seq in seqs:
+            tmp = []
+            for token in seq:
+                if token in self.token2idx:
+                    tmp.append(self.token2idx[token])
+                else:
+                    tmp.append(2)
+            tokens_list.append(tmp)
 
         tokens_batch = torch.from_numpy(
             np.array(
-                [[self.token2idx[token] for token in seq] for seq in seqs],
+                tokens_list,
                 dtype=np.int64,
             )
         )

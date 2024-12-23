@@ -148,7 +148,6 @@ class SPEECH_LLM(nn.Module):
             dim=-1,
         )
 
-
         depth_audio_codes_input = torch.cat(
             [
                 audio_codes,
@@ -158,7 +157,6 @@ class SPEECH_LLM(nn.Module):
                     dtype=audio_codes.dtype,
                     device=audio_codes.device,
                 ),
-
             ],
             dim=-1,
         )
@@ -173,7 +171,9 @@ class SPEECH_LLM(nn.Module):
                     dtype=audio_codes.dtype,
                     device=audio_codes.device,
                 ),
-                depth_audio_codes_input[:, :-1], # we don't need the last level token as input
+                depth_audio_codes_input[
+                    :, :-1
+                ],  # we don't need the last level token as input
             ],
             dim=1,
         )
@@ -236,37 +236,49 @@ class SPEECH_LLM(nn.Module):
         # get the audio part only
         last_hidden_state = last_hidden_state[:, inputs_text_embeds.shape[1] :]
 
-        dep_hidden_states = [self.depth_linear_in[i](last_hidden_state) for i in range(self.num_codebooks)] # shape [(B, T, dep_hidden_size)] * num_codebooks
+        dep_hidden_states = [
+            self.depth_linear_in[i](last_hidden_state)
+            for i in range(self.num_codebooks)
+        ]  # shape [(B, T, dep_hidden_size)] * num_codebooks
         # there are [BxT, num_codebooks] input_ids --> [BxT, num_codebooks, dep_hidden_size]
         for i in range(self.num_codebooks):
-            dep_input_embeds = self.dep_embed_tokens[i](depth_audio_codes_input[:, i]) # B, T, dep_hidden_size
+            dep_input_embeds = self.dep_embed_tokens[i](
+                depth_audio_codes_input[:, i]
+            )  # B, T, dep_hidden_size
             dep_hidden_states[i] += dep_input_embeds
         # dep_hidden_input shape (BxT, num_codebooks, dep_hidden_size)
-        dep_hidden_input = torch.stack(dep_hidden_states, dim=2) # B, T, num_codebooks, dep_hidden_size 
+        dep_hidden_input = torch.stack(
+            dep_hidden_states, dim=2
+        )  # B, T, num_codebooks, dep_hidden_size
         assert dep_hidden_input.shape[2] == self.num_codebooks
-        dep_hidden_input = dep_hidden_input.view(-1, self.num_codebooks, self.dep_hidden_size)
+        dep_hidden_input = dep_hidden_input.view(
+            -1, self.num_codebooks, self.dep_hidden_size
+        )
 
         depth_model_outputs = self.depth_llm(
             inputs_embeds=dep_hidden_input,
             return_dict=True,
             output_hidden_states=True,
-        ) # shape (BxT, num_codebooks, dep_hidden_size)
+        )  # shape (BxT, num_codebooks, dep_hidden_size)
 
         # now separately compute the audio logits
         audio_logits = [
-            self.audio_lm_heads[codebook](depth_model_outputs.hidden_states[-1][:, codebook])
+            self.audio_lm_heads[codebook](
+                depth_model_outputs.hidden_states[-1][:, codebook]
+            )
             for codebook in range(self.num_codebooks)
-        ] # shape [(BxT, audio_vocab_size)] * num_codebooks           
+        ]  # shape [(BxT, audio_vocab_size)] * num_codebooks
 
         # stack the audio logits
         # audio_logits shape (batch_sizexsequence_length, vocab_size, num_codebooks)
         audio_logits = torch.stack(audio_logits, dim=-1)
         batch_size = audio_codes_input.shape[0]
-        audio_logits = audio_logits.view(batch_size, -1, self.audio_vocab_size, self.num_codebooks)
-        #print("audio_logits shape: ", audio_logits.shape)
-        #print("audio_labels shape: ", audio_labels.shape)
+        audio_logits = audio_logits.view(
+            batch_size, -1, self.audio_vocab_size, self.num_codebooks
+        )
+        # print("audio_logits shape: ", audio_logits.shape)
+        # print("audio_labels shape: ", audio_labels.shape)
 
-        
         total_loss = []
         top_k_acc_list = []
 
@@ -274,20 +286,20 @@ class SPEECH_LLM(nn.Module):
         audio_labels = audio_labels.masked_fill(
             audio_labels == self.audio_pad_token_id, IGNORE_TOKEN_ID
         )
-        #print("audio_labels shape: ", audio_labels.shape)
+        # print("audio_labels shape: ", audio_labels.shape)
         assert audio_labels.shape[1] == self.num_codebooks
         audio_labels[:, 1:, -1] = IGNORE_TOKEN_ID
-        #print("audio_labels shape: ", audio_labels.shape, 23333333333)
+        # print("audio_labels shape: ", audio_labels.shape, 23333333333)
 
         for i in range(self.num_codebooks):
             logits = audio_logits[:, :, :, i]
             labels = audio_labels[:, i]
-            #print("labels shape: ", labels.shape)
+            # print("labels shape: ", labels.shape)
 
             logits = logits.contiguous().view(-1, self.audio_vocab_size)
             labels = labels.contiguous().view(-1)
-            #print("logits shape: ", logits.shape)
-            #print("labels shape: ", labels.shape)
+            # print("logits shape: ", logits.shape)
+            # print("labels shape: ", labels.shape)
 
             loss = self.loss_fct(logits, labels)
             total_loss.append(loss)
@@ -336,9 +348,7 @@ class SPEECH_LLM(nn.Module):
         inputs_text_embeds = self.temporal_llm.get_input_embeddings()(input_ids)
         inputs_audio_embeds = sum(
             [
-                self.embed_tokens[codebook](
-                    audio_codes_input[:, codebook]
-                )
+                self.embed_tokens[codebook](audio_codes_input[:, codebook])
                 for codebook in range(self.num_codebooks)
             ]
         )
@@ -360,7 +370,8 @@ class SPEECH_LLM(nn.Module):
         generated_audio_tokens = []
         # last_step_codes B,Num_codebooks, 1
         # last_step_codes = audio_codes_input[:, :, -1:]
-        for i in range(max_length):
+
+        for _ in range(max_length):
             outputs = self.temporal_llm(
                 inputs_embeds=inputs_embeds,
                 use_cache=True,
@@ -372,9 +383,12 @@ class SPEECH_LLM(nn.Module):
             kv_cache = outputs.past_key_values
 
             last_hidden_state = outputs.hidden_states[-1].clone()
-            last_hidden_state = last_hidden_state[:, -1:] # shape (B, 1, hidden_size)
+            last_hidden_state = last_hidden_state[:, -1:]  # shape (B, 1, hidden_size)
 
-            dep_hidden_states = [self.depth_linear_in[i](last_hidden_state) for i in range(self.num_codebooks)]
+            dep_hidden_states = [
+                self.depth_linear_in[i](last_hidden_state)
+                for i in range(self.num_codebooks)
+            ]
             # start from the audio bos token B,num_codebooks,1
             last_ids = torch.full(
                 (batch_size, 1),
@@ -386,8 +400,8 @@ class SPEECH_LLM(nn.Module):
             depth_kv_cache = None
             for i in range(self.num_codebooks):
                 dep_input_embeds = self.dep_embed_tokens[i](last_ids)
-                dep_input_embeds += last_hidden_state
-                
+                dep_input_embeds += dep_hidden_states[i]
+
                 depth_model_outputs = self.depth_llm(
                     inputs_embeds=dep_input_embeds,
                     return_dict=True,
@@ -395,17 +409,42 @@ class SPEECH_LLM(nn.Module):
                     use_cache=True,
                     past_key_values=depth_kv_cache,
                 )
-                audio_logits = self.audio_lm_heads[i](depth_model_outputs.hidden_states[-1])  # shape (B, 1, audio_vocab_size)
+                audio_logits = self.audio_lm_heads[i](
+                    depth_model_outputs.hidden_states[-1]
+                )  # shape (B, 1, audio_vocab_size)
                 audio_logits = audio_logits.squeeze(1)
-                preceding_tokens = None
-                last_ids = topk_sampling(
-                    audio_logits,
-                    top_k=top_k,
-                    top_p=top_p,
-                    temperature=1.0,
-                    repetition_aware_sampling=True,
-                    preceding_tokens=preceding_tokens,
-                )
+                if i >= 0:
+                    # get preceding tokens from generated_audio_tokens [(B,num_codebooks)] * decoding_steps
+                    # preceding_tokens # shape (B, decoding_steps) for specific codebook
+                    if generated_audio_tokens:
+                        preceding_tokens = torch.stack(
+                            [item[:, i] for item in generated_audio_tokens], dim=1
+                        )
+                        # get the last 10 columns for the preceding tokens
+                        preceding_tokens = preceding_tokens[:, -10:]
+                    else:
+                        preceding_tokens = None
+                    last_ids = topk_sampling(
+                        audio_logits,
+                        top_k=top_k,
+                        top_p=top_p,
+                        temperature=1.0,
+                        repetition_aware_sampling=True,
+                        preceding_tokens=preceding_tokens,
+                    )
+                else:
+                    pass
+                    # preceding_tokens = None
+                    # greedy decoding
+                    # last_ids = torch.argmax(audio_logits, dim=-1).unsqueeze(1)
+                    # last_ids = topk_sampling(
+                    #     audio_logits,
+                    #     top_k=top_k,
+                    #     top_p=top_p,
+                    #     temperature=1.0,
+                    #     repetition_aware_sampling=True,
+                    #     preceding_tokens=preceding_tokens,
+                    # )
                 assert last_ids.shape[0] == 1, "WAR: The batch size should be 1"
                 if last_ids[0, 0] == self.audio_eos_token_id:
                     assert i == 0, "Only the first codebook can generate the eos token"
@@ -414,7 +453,7 @@ class SPEECH_LLM(nn.Module):
                 depth_kv_cache = depth_model_outputs.past_key_values
 
             if next_ids:
-                next_ids = torch.cat(next_ids, dim=-1) # shape (B, num_codebooks)
+                next_ids = torch.cat(next_ids, dim=-1)  # shape (B, num_codebooks)
                 generated_audio_tokens.append(next_ids)
                 inputs_embeds = sum(
                     [
@@ -424,7 +463,9 @@ class SPEECH_LLM(nn.Module):
                 )
             else:
                 break
-        generated_audio_tokens = torch.stack(generated_audio_tokens, dim=-1) # shape (B, num_codebooks, max_length)
+        generated_audio_tokens = torch.stack(
+            generated_audio_tokens, dim=-1
+        )  # shape (B, num_codebooks, max_length)
         return generated_audio_tokens
 
 

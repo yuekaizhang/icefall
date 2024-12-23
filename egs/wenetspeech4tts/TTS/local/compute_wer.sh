@@ -1,6 +1,3 @@
-export PYTHONPATH=$PYTHONPATH:/workspace/icefall_valle
-
-
 wav_dir=$1
 wav_files=$(ls $wav_dir/*.wav)
 # wav_files=$(echo $wav_files | cut -d " " -f 1)
@@ -12,10 +9,9 @@ label_file=$2
 model_path=local/sherpa-onnx-paraformer-zh-2023-09-14
 
 if [ ! -d $model_path ]; then
-    exit 1
     pip install sherpa-onnx
     wget -nc https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-paraformer-zh-2023-09-14.tar.bz2
-    tar xvf sherpa-onnx-paraformer-zh-2023-09-14.tar.bz2
+    tar xvf sherpa-onnx-paraformer-zh-2023-09-14.tar.bz2 -C local
 fi
 
 python3 local/offline-decode-files.py  \
@@ -29,4 +25,3 @@ python3 local/offline-decode-files.py  \
     --feature-dim=80 \
     --label $label_file \
     $wav_files
-

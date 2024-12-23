@@ -27,12 +27,11 @@ from typing import Any, Dict, Optional
 
 import torch
 from lhotse import CutSet, Spectrogram, SpectrogramConfig, load_manifest_lazy
-from lhotse.dataset import (  # noqa F401 for PrecomputedFeatures
+from lhotse.dataset import (  # noqa F401 for PrecomputedFeatures; SpeechSynthesisDataset,
     CutConcatenate,
     DynamicBucketingSampler,
     PrecomputedFeatures,
     SimpleCutSampler,
-    SpeechSynthesisDataset,
 )
 from lhotse.dataset.input_strategies import (  # noqa F401 For AudioSamples
     AudioSamples,
@@ -40,6 +39,7 @@ from lhotse.dataset.input_strategies import (  # noqa F401 For AudioSamples
 )
 from lhotse.features.io import KaldiReader
 from lhotse.utils import fix_random_seed
+from speech_synthesis import SpeechSynthesisDataset  # noqa F401
 from torch.utils.data import DataLoader
 
 from icefall.utils import str2bool
@@ -148,7 +148,7 @@ class TtsDataModule:
         group.add_argument(
             "--num-workers",
             type=int,
-            default=4,
+            default=1,
             help="The number of training dataloader workers that "
             "collect the batches.",
         )

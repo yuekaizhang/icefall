@@ -91,6 +91,20 @@ def get_args():
     )
 
     parser.add_argument(
+        "--ar-checkpoint",
+        type=str,
+        default="exp/vallf_nano_full/checkpoint-100000.pt",
+        help="Path to the saved checkpoint.",
+    )
+
+    parser.add_argument(
+        "--nar-checkpoint",
+        type=str,
+        default="exp/vallf_nano_full/checkpoint-100000.pt",
+        help="Path to the saved checkpoint.",
+    )
+
+    parser.add_argument(
         "--output-dir",
         type=Path,
         default=Path("infer/demo"),
@@ -135,13 +149,17 @@ def get_args():
     return parser.parse_args()
 
 
-def load_model(checkpoint, device):
+def load_model(args, device):
+    checkpoint = args.checkpoint
     if not checkpoint:
         return None
 
-    checkpoint = torch.load(checkpoint, map_location=device)
+    # checkpoint = torch.load(checkpoint, map_location=device)
+    ar_params = torch.load(args.ar_checkpoint, map_location=device)
+    nar_params = torch.load(args.nar_checkpoint, map_location=device)
 
-    params = AttributeDict(checkpoint)
+    # params = AttributeDict(checkpoint)
+    params = AttributeDict(ar_params)
     model = VALLE(
         params.decoder_dim,
         params.nhead,
@@ -155,10 +173,39 @@ def load_model(checkpoint, device):
         num_quantizers=params.num_quantizers,
     )
 
-    missing_keys, unexpected_keys = model.load_state_dict(
-        checkpoint["model"], strict=True
-    )
-    assert not missing_keys
+    # 获取阶段参数
+    ar_parameters = list(model.stage_named_parameters(1))
+    nar_parameters = list(model.stage_named_parameters(2))
+
+    # 加载参数并确保没有重叠和遗漏
+    loaded_ar_params_names = []
+    loaded_nar_params_names = []
+
+    # 加载 AR 参数
+    for param in ar_parameters:
+        name = param[0]
+        param = param[1]
+
+        if name in ar_params["model"]:
+            param.data.copy_(ar_params["model"][name].data)
+            loaded_ar_params_names.append(name)
+
+    # 加载 NAR 参数
+    for param in nar_parameters:
+        name = param[0]
+        param = param[1]
+        if name in nar_params["model"]:
+            param.data.copy_(nar_params["model"][name].data)
+            loaded_nar_params_names.append(name)
+
+    # 检查未加载的参数
+    assert len(loaded_ar_params_names) == len(ar_parameters)
+    assert len(loaded_nar_params_names) == len(nar_parameters)
+
+    # missing_keys, unexpected_keys = model.load_state_dict(
+    #     checkpoint["model"], strict=True
+    # )
+    # assert not missing_keys
     model.to(device)
     model.eval()
 
@@ -177,6 +224,35 @@ def tokenize_audio(tokenizer: AudioTokenizer, audio_path: str):
     return encoded_frames
 
 
+def convert_full_width_to_half_width(text):
+    # 创建全角和半角字符的映射
+    full_width = (
+        "ａｂｃｄｅｆｇｈｉｊｋｌｍｎｏｐｑｒｓｔｕｖｗｘｙｚ"  # 全角小写字母
+        "ＡＢＣＤＥＦＧＨＩＪＫＬＭＮＯＰＱＲＳＴＵＶＷＸＹＺ"  # 全角大写字母
+        "０１２３４５６７８９"  # 全角数字
+        "！？；：‘’“”—"  # 全角标点符号
+    )
+
+    half_width = (
+        "abcdefghijklmnopqrstuvwxyz"  # 半角小写字母
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZ"  # 半角大写字母
+        "0123456789"  # 半角数字
+        "!?;:''\"\"—"  # 半角标点符号
+    )
+    # 创建转换表
+    full_to_half = str.maketrans(full_width, half_width)
+    text = text.translate(full_to_half)
+
+    # remove ;
+    text = text.replace(";", ",")
+    text = text.replace('"', "'")
+    text = text.replace("!", ".")
+    text = text.replace("!", ".")
+    text = text.replace(":", ",")
+    # 转换文本
+    return text
+
+
 @torch.no_grad()
 def main():
     args = get_args()
@@ -185,7 +261,7 @@ def main():
     if torch.cuda.is_available():
         device = torch.device("cuda", 0)
 
-    model, text_tokens = load_model(args.checkpoint, device)
+    model, text_tokens = load_model(args, device)
 
     text_collater = get_text_token_collater(text_tokens)
 
@@ -213,10 +289,16 @@ def main():
         # https://github.com/lifeiteng/lifeiteng.github.com/blob/main/valle/prepare.py
         with open(args.text) as f:
             for line in f:
-                fields = line.strip().split("  ")
+                # fields = line.strip().split("\t")
+                # fields = [item for item in fields if item]
+                # assert len(fields) == 4
+                # prompt_text, prompt_audio, text, audio_path = fields
+                fields = line.strip().split("|")
                 fields = [item for item in fields if item]
                 assert len(fields) == 4
-                prompt_text, prompt_audio, text, audio_path = fields
+                audio_path, prompt_text, prompt_audio, text = fields
+                text = convert_full_width_to_half_width(text)
+
                 logging.info(f"synthesize text: {text}")
                 text_tokens, text_tokens_lens = text_collater(
                     [
@@ -249,7 +331,9 @@ def main():
                 )
                 # store
                 # save audio path into args.output_dir + audio_path
-                audio_path = f"{args.output_dir}/{audio_path}"
+                # get the stem of the audio path
+                audio_path = Path(audio_path).stem
+                audio_path = f"{args.output_dir}/{audio_path}.wav"
                 # mkdir -p
                 os.makedirs(os.path.dirname(audio_path), exist_ok=True)
                 torchaudio.save(audio_path, samples[0].cpu(), 24000)

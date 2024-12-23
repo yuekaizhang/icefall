@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 #
 # Copyright (c)  2023 by manyeyes
@@ -88,16 +87,13 @@ used in this file.
 import argparse
 import time
 import wave
-import soundfile as sf
 from pathlib import Path
 from typing import List, Tuple
 
 import numpy as np
 import sherpa_onnx
-from icefall.utils import (
-    store_transcripts,
-    write_error_stats,
-)
+import soundfile as sf
+
 
 def get_args():
     parser = argparse.ArgumentParser(
@@ -353,12 +349,15 @@ def read_wave(wave_filename: str) -> Tuple[np.ndarray, int]:
        - Sample rate of the wave file.
     """
 
-    samples, sample_rate = sf.read(wave_filename, dtype='float32')
-    assert samples.ndim == 1, f"Expected single channel, but got {samples.ndim} channels."
-    
+    samples, sample_rate = sf.read(wave_filename, dtype="float32")
+    assert (
+        samples.ndim == 1
+    ), f"Expected single channel, but got {samples.ndim} channels."
+
     samples_float32 = samples.astype(np.float32)
-    
+
     return samples_float32, sample_rate
+
 
 def normalize_text_alimeeting(text: str) -> str:
     """
@@ -366,6 +365,7 @@ def normalize_text_alimeeting(text: str) -> str:
     See: https://github.com/yufan-aslp/AliMeeting/blob/main/asr/local/text_normalize.pl
     """
     import re
+
     text = text.replace(" ", "")
     text = text.replace("<sil>", "")
     text = text.replace("<%>", "")
@@ -392,11 +392,11 @@ def normalize_text_alimeeting(text: str) -> str:
     text = text.replace("？", "")
     return text
 
+
 def main():
     args = get_args()
     assert_file_exists(args.tokens)
     assert args.num_threads > 0, args.num_threads
-
 
     assert len(args.nemo_ctc) == 0, args.nemo_ctc
     assert len(args.wenet_ctc) == 0, args.wenet_ctc
@@ -419,9 +419,10 @@ def main():
     print("Started!")
     start_time = time.time()
 
-    streams = []
+    streams, results = [], []
     total_duration = 0
-    for wave_filename in args.sound_files:
+
+    for i, wave_filename in enumerate(args.sound_files):
         assert_file_exists(wave_filename)
         samples, sample_rate = read_wave(wave_filename)
         duration = len(samples) / sample_rate
@@ -430,9 +431,15 @@ def main():
         s.accept_waveform(sample_rate, samples)
 
         streams.append(s)
-
-    recognizer.decode_streams(streams)
-    results = [s.result.text for s in streams]
+        if i % 10 == 0:
+            recognizer.decode_streams(streams)
+            results += [s.result.text for s in streams]
+            streams = []
+            print(f"Processed {i} files")
+        # process the last batch
+    if streams:
+        recognizer.decode_streams(streams)
+        results += [s.result.text for s in streams]
     end_time = time.time()
     print("Done!")
 
@@ -453,6 +460,8 @@ def main():
         f"Real time factor (RTF): {elapsed_seconds:.3f}/{total_duration:.3f} = {rtf:.3f}"
     )
     if args.label:
+        from icefall.utils import store_transcripts, write_error_stats
+
         labels_dict = {}
         with open(args.label, "r") as f:
             for line in f:
@@ -466,18 +475,21 @@ def main():
                 assert len(fields) == 4
                 audio_path, prompt_text, prompt_audio, text = fields
                 labels_dict[Path(audio_path).stem] = normalize_text_alimeeting(text)
-    
+
         final_results = []
         for key, value in results_dict.items():
             final_results.append((key, labels_dict[key], value))
 
-        store_transcripts(filename=f"{args.log_dir}/recogs-{args.name}.txt", texts=final_results)
+        store_transcripts(
+            filename=f"{args.log_dir}/recogs-{args.name}.txt", texts=final_results
+        )
         with open(f"{args.log_dir}/errs-{args.name}.txt", "w") as f:
             write_error_stats(f, "test-set", final_results, enable_log=True)
 
         with open(f"{args.log_dir}/errs-{args.name}.txt", "r") as f:
             print(f.readline())  # WER
             print(f.readline())  # Detailed errors
+
 
 if __name__ == "__main__":
     main()
