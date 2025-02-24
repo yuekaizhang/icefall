@@ -619,7 +619,7 @@ def prepare_input(
         max_len = mel_spec.size(1)
         assert max_len != 100  # WAR: bigvgan mel dim
         code_inputs = torch.full(
-            (len(semantic_tokens), max_len), -2, dtype=torch.long
+            (len(semantic_tokens), max_len), -1, dtype=torch.long
         ).to(device)
         for i, tokens in enumerate(semantic_tokens):
             tokens = tokens[:max_len]
@@ -676,7 +676,7 @@ def compute_loss(
     # at entry, TextTokens is (N, P)
 
     with torch.set_grad_enabled(is_training):
-        loss_cfm, cond, pred, codebook_loss, accuracy = model(
+        loss_cfm, cond, pred, codebook_loss, accuracy, accuracy_top10 = model(
             mel_spec, text=text_inputs, lens=mel_lengths, codebook=code_inputs
         )
 
@@ -691,6 +691,8 @@ def compute_loss(
     info["loss"] = loss.detach().cpu().item() * info["samples"]
     info["loss_cfm"] = loss_cfm.detach().cpu().item() * info["samples"]
     info["codebook_loss"] = codebook_loss.detach().cpu().item() * info["samples"]
+    info["accuracy"] = accuracy * info["samples"]
+    info["accuracy_top10"] = accuracy_top10 * info["samples"]
 
     return loss, info
 

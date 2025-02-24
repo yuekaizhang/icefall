@@ -205,7 +205,7 @@ class DiT(nn.Module):
 
                 if i == middle_layer_index:
                     assert len(self.transformer_blocks) == 18
-                middle_layer_output = x
+                    middle_layer_output = x
 
         if self.long_skip_connection is not None:
             x = self.long_skip_connection(torch.cat((x, residual), dim=-1))

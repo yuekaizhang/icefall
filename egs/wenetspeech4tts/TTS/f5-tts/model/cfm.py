@@ -28,6 +28,8 @@ from torch.nn.utils.rnn import pad_sequence
 from torchdiffeq import odeint
 from torchmetrics.classification import MulticlassAccuracy
 
+IGNORE_TOKEN_ID = 0
+
 
 class CFM(nn.Module):
     def __init__(
@@ -76,10 +78,17 @@ class CFM(nn.Module):
         codebook_vocab = 6561
         transformer_dim = 768
         self.codebook_head = nn.Linear(transformer_dim, codebook_vocab + 1)
-        IGNORE_TOKEN_ID = -1
+
         self.audio_accuracy_metric = MulticlassAccuracy(
             codebook_vocab + 1,
             top_k=1,
+            average="micro",
+            multidim_average="global",
+            ignore_index=IGNORE_TOKEN_ID,
+        )
+        self.audio_accuracy_metric_topk = MulticlassAccuracy(
+            codebook_vocab + 1,
+            top_k=10,
             average="micro",
             multidim_average="global",
             ignore_index=IGNORE_TOKEN_ID,
@@ -334,43 +343,21 @@ class CFM(nn.Module):
             return_middle_layer_output=return_middle_layer_output,
         )
 
-        # middle_layer_outputs shape is (batch, seq_len, dim)
-        # codebook is (batch, seq_len)
-        # now we need to predict codebook from middle_layer_outputs
         codebook_pred = self.codebook_head(middle_layer_outputs)
-        # now we would like calculate the distill cross entropy loss
         # codebook is (batch, seq_len)
         # codebook_pred is (batch, seq_len, codebook_vocab + 1)
-        codebook = codebook + 1
-        codebook_mask = codebook != -1
-        print("codebook shape before mask:", codebook.shape)
+        codebook = codebook + 1  # 0 is reserved for padding
+        codebook_mask = codebook != IGNORE_TOKEN_ID
         codebook = codebook[codebook_mask]
-        print("codebook shape after mask:", codebook.shape)
-        print("codebook_pred shape before mask:", codebook_pred.shape)
         codebook_pred = codebook_pred[codebook_mask]
-        print("codebook_pred shape after mask:", codebook_pred.shape)
-
-        # reshape to compute cross entropy loss
-        codebook = codebook.view(-1)
-        print("codebook shape after view:", codebook.shape)
-        codebook_pred = codebook_pred.view(-1, codebook_pred.shape[-1])
 
         codebook_loss = F.cross_entropy(codebook_pred, codebook)
         accuracy = self.audio_accuracy_metric(codebook_pred.detach(), codebook).item()
-
-        # reshape back codebook and codebook_pred
-        # codebook = codebook.view(batch, -1)
-        # codebook_pred = codebook_pred.view(batch, -1, codebook_pred.shape[-1])
-        # print first batch codebook and codebook_pred
-        # print("codebook[0]:", codebook[0])
-        # print("codebook_pred[0]:", codebook_pred[0])
-        codebook_pred_index = codebook_pred.argmax(dim=-1)
-        print("accuracy:", accuracy)
-        print("codebook_pred:", codebook_pred_index[:100])
-        print("codebook:", codebook[:100])
-        print("codebook_loss:", codebook_loss)
+        accuracy_top10 = self.audio_accuracy_metric_topk(
+            codebook_pred.detach(), codebook
+        ).item()
 
         # flow matching loss
         loss = F.mse_loss(pred, flow, reduction="none")
         loss = loss[rand_span_mask]
-        return loss.mean(), cond, pred, codebook_loss, accuracy
+        return loss.mean(), cond, pred, codebook_loss, accuracy, accuracy_top10
