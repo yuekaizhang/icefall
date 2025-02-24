@@ -320,6 +320,13 @@ def get_parser():
         help="Whether to use cosyvoice semantic token to replace text token.",
     )
 
+    parser.add_argument(
+        "--codebook-loss-scale",
+        type=float,
+        default=0.1,
+        help="The scale of codebook loss.",
+    )
+
     add_model_arguments(parser)
 
     return parser
@@ -395,7 +402,7 @@ def get_tokenizer(vocab_file_path: str):
 
 
 def get_model(params):
-    if params.use_cosyvoice_semantic_token:
+    if params.use_cosyvoice_semantic_token and params.codebook_loss_scale <= 0:
         # https://www.modelscope.cn/models/iic/CosyVoice2-0.5B/file/view/master?fileName=cosyvoice.yaml&status=1#L36
         vocab_char_map, vocab_size = None, 6561
     else:
@@ -592,7 +599,10 @@ def interpolate_tokens(cosy_tokens, pad_token=-1):
 
 
 def prepare_input(
-    batch: dict, device: torch.device, use_cosyvoice_semantic_token: bool
+    batch: dict,
+    device: torch.device,
+    use_cosyvoice_semantic_token: bool,
+    distill: bool = True,
 ):
     """Parse batch data"""
     mel_spec = batch["features"]
@@ -605,17 +615,30 @@ def prepare_input(
             tokens = interpolate_tokens(tokens)
             semantic_tokens.append(tokens)
         # pad to the same length, B,T, with pad value -1
-        max_len = max([len(tokens) for tokens in semantic_tokens])
-        text_inputs = torch.full(
-            (len(semantic_tokens), max_len), -1, dtype=torch.long
+        # max_len = max([len(tokens) for tokens in semantic_tokens])
+        max_len = mel_spec.size(1)
+        assert max_len != 100  # WAR: bigvgan mel dim
+        code_inputs = torch.full(
+            (len(semantic_tokens), max_len), -2, dtype=torch.long
         ).to(device)
         for i, tokens in enumerate(semantic_tokens):
-            text_inputs[i, : len(tokens)] = torch.tensor(tokens, dtype=torch.long)
-    else:
-        text_inputs = batch["text"]
-        text_inputs = convert_char_to_pinyin(text_inputs, polyphone=True)
+            tokens = tokens[:max_len]
+            code_inputs[i, : len(tokens)] = torch.tensor(tokens, dtype=torch.long)
 
-    return text_inputs, mel_spec.to(device), mel_lengths.to(device)
+    text_inputs = batch["text"]
+    text_inputs = convert_char_to_pinyin(text_inputs, polyphone=True)
+
+    if not use_cosyvoice_semantic_token:
+        return text_inputs, mel_spec.to(device), mel_lengths.to(device), None
+    elif distill:
+        return (
+            text_inputs,
+            mel_spec.to(device),
+            mel_lengths.to(device),
+            code_inputs.to(device),
+        )
+    else:
+        return code_inputs, mel_spec.to(device), mel_lengths.to(device), None
 
 
 def compute_loss(
@@ -644,15 +667,20 @@ def compute_loss(
         values >= 1.0 are fully warmed up and have all modules present.
     """
     device = model.device if isinstance(model, DDP) else next(model.parameters()).device
-    (text_inputs, mel_spec, mel_lengths) = prepare_input(
+    (text_inputs, mel_spec, mel_lengths, code_inputs) = prepare_input(
         batch,
         device=device,
         use_cosyvoice_semantic_token=params.use_cosyvoice_semantic_token,
+        distill=params.codebook_loss_scale > 0,
     )
     # at entry, TextTokens is (N, P)
 
     with torch.set_grad_enabled(is_training):
-        loss, cond, pred = model(mel_spec, text=text_inputs, lens=mel_lengths)
+        loss_cfm, cond, pred, codebook_loss, accuracy = model(
+            mel_spec, text=text_inputs, lens=mel_lengths, codebook=code_inputs
+        )
+
+    loss = loss_cfm + params.codebook_loss_scale * codebook_loss
     assert loss.requires_grad == is_training
 
     info = MetricsTracker()
@@ -661,6 +689,8 @@ def compute_loss(
         info["samples"] = mel_lengths.size(0)
 
     info["loss"] = loss.detach().cpu().item() * info["samples"]
+    info["loss_cfm"] = loss_cfm.detach().cpu().item() * info["samples"]
+    info["codebook_loss"] = codebook_loss.detach().cpu().item() * info["samples"]
 
     return loss, info
 

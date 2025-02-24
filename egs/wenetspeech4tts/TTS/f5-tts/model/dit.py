@@ -178,6 +178,7 @@ class DiT(nn.Module):
         drop_audio_cond,  # cfg for cond audio
         drop_text,  # cfg for text
         mask: bool["b n"] | None = None,  # noqa: F722
+        return_middle_layer_output=False,
     ):
         batch, seq_len = x.shape[0], x.shape[1]
         if time.ndim == 0:
@@ -193,7 +194,8 @@ class DiT(nn.Module):
         if self.long_skip_connection is not None:
             residual = x
 
-        for block in self.transformer_blocks:
+        middle_layer_index = 12
+        for i, block in enumerate(self.transformer_blocks):
             if self.checkpoint_activations:
                 x = torch.utils.checkpoint.checkpoint(
                     self.ckpt_wrapper(block), x, t, mask, rope
@@ -201,10 +203,16 @@ class DiT(nn.Module):
             else:
                 x = block(x, t, mask=mask, rope=rope)
 
+                if i == middle_layer_index:
+                    assert len(self.transformer_blocks) == 18
+                middle_layer_output = x
+
         if self.long_skip_connection is not None:
             x = self.long_skip_connection(torch.cat((x, residual), dim=-1))
 
         x = self.norm_out(x, t)
         output = self.proj_out(x)
-
-        return output
+        if return_middle_layer_output:
+            return output, middle_layer_output
+        else:
+            return output

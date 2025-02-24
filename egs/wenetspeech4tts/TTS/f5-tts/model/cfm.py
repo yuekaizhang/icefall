@@ -26,6 +26,7 @@ from model.utils import (
 from torch import nn
 from torch.nn.utils.rnn import pad_sequence
 from torchdiffeq import odeint
+from torchmetrics.classification import MulticlassAccuracy
 
 
 class CFM(nn.Module):
@@ -72,6 +73,17 @@ class CFM(nn.Module):
 
         # vocab map for tokenization
         self.vocab_char_map = vocab_char_map
+        codebook_vocab = 6561
+        transformer_dim = 768
+        self.codebook_head = nn.Linear(transformer_dim, codebook_vocab + 1)
+        IGNORE_TOKEN_ID = -1
+        self.audio_accuracy_metric = MulticlassAccuracy(
+            codebook_vocab + 1,
+            top_k=1,
+            average="micro",
+            multidim_average="global",
+            ignore_index=IGNORE_TOKEN_ID,
+        )
 
     @property
     def device(self):
@@ -241,6 +253,7 @@ class CFM(nn.Module):
         *,
         lens: int["b"] | None = None,  # noqa: F821
         noise_scheduler: str | None = None,
+        codebook: float["b nw"] | None = None,  # noqa: F722
     ):
         # handle raw wave
         if inp.ndim == 2:
@@ -310,17 +323,54 @@ class CFM(nn.Module):
 
         # if want rigourously mask out padding, record in collate_fn in dataset.py, and pass in here
         # adding mask will use more memory, thus also need to adjust batchsampler with scaled down threshold for long sequences
-        pred = self.transformer(
+        return_middle_layer_output = True if codebook is not None else False
+        pred, middle_layer_outputs = self.transformer(
             x=φ,
             cond=cond,
             text=text,
             time=time,
             drop_audio_cond=drop_audio_cond,
             drop_text=drop_text,
+            return_middle_layer_output=return_middle_layer_output,
         )
+
+        # middle_layer_outputs shape is (batch, seq_len, dim)
+        # codebook is (batch, seq_len)
+        # now we need to predict codebook from middle_layer_outputs
+        codebook_pred = self.codebook_head(middle_layer_outputs)
+        # now we would like calculate the distill cross entropy loss
+        # codebook is (batch, seq_len)
+        # codebook_pred is (batch, seq_len, codebook_vocab + 1)
+        codebook = codebook + 1
+        codebook_mask = codebook != -1
+        print("codebook shape before mask:", codebook.shape)
+        codebook = codebook[codebook_mask]
+        print("codebook shape after mask:", codebook.shape)
+        print("codebook_pred shape before mask:", codebook_pred.shape)
+        codebook_pred = codebook_pred[codebook_mask]
+        print("codebook_pred shape after mask:", codebook_pred.shape)
+
+        # reshape to compute cross entropy loss
+        codebook = codebook.view(-1)
+        print("codebook shape after view:", codebook.shape)
+        codebook_pred = codebook_pred.view(-1, codebook_pred.shape[-1])
+
+        codebook_loss = F.cross_entropy(codebook_pred, codebook)
+        accuracy = self.audio_accuracy_metric(codebook_pred.detach(), codebook).item()
+
+        # reshape back codebook and codebook_pred
+        # codebook = codebook.view(batch, -1)
+        # codebook_pred = codebook_pred.view(batch, -1, codebook_pred.shape[-1])
+        # print first batch codebook and codebook_pred
+        # print("codebook[0]:", codebook[0])
+        # print("codebook_pred[0]:", codebook_pred[0])
+        codebook_pred_index = codebook_pred.argmax(dim=-1)
+        print("accuracy:", accuracy)
+        print("codebook_pred:", codebook_pred_index[:100])
+        print("codebook:", codebook[:100])
+        print("codebook_loss:", codebook_loss)
 
         # flow matching loss
         loss = F.mse_loss(pred, flow, reduction="none")
         loss = loss[rand_span_mask]
-
-        return loss.mean(), cond, pred
+        return loss.mean(), cond, pred, codebook_loss, accuracy
